@@ -1,20 +1,30 @@
 # OpenSpeaker
 
-An open-source, demo-ready speaker and conference program workspace. OpenSpeaker brings call-for-speakers review, speaker onboarding, scheduling, communications, and a public event experience into one fast interface.
+OpenSpeaker is an open-source conference program operations SaaS: collect proposals, run committee reviews, onboard speakers, build the agenda, communicate, and publish the attendee experience.
 
 ![OpenSpeaker](https://img.shields.io/badge/license-MIT-6b5bd6) ![React](https://img.shields.io/badge/React-19-61dafb) ![TypeScript](https://img.shields.io/badge/TypeScript-6-blue)
 
-## What is included
+## Product capabilities
 
-- **Hosted CFP and form builder** with validation, conditional questions, category routing, co-speakers, limits, and confirmation references.
-- **Submission and committee workspaces** with search, editing, multi-round rubrics, reviewer notes, aggregate scores, and decisions.
-- **Speaker CRM and participant portal** with invitation responses, editable profiles, onboarding tasks, asset metadata, reminders, resources, and safe HTML previews.
-- **Agenda builder** with drag/drop and accessible assignment, automatic scheduling, room/speaker/availability conflicts, list/day/track/room views, publishing, and ICS.
-- **Communications center** with template CRUD, audience segmentation, personalization, unresolved-token checks, and a durable in-app outbox.
-- **Public event experience** with a responsive speaker gallery, published agenda, filters, personal itinerary, and copyable iframe embed.
-- **Portable data** through versioned JSON import/export, submissions CSV, calendar ICS, and one-way Accelevents-ready CSV.
+- Hosted CFP builder with deadlines, validation, conditional questions, category routing, co-speakers, per-email limits, abuse throttling, and server-side persistence.
+- Normalized multi-round evaluation plans with weighted rubrics, blind review, identity-scoped assignments, abstention, advancement, and decisions.
+- Speaker CRM and authenticated self-service portal for invitation responses, profile edits, onboarding tasks, private headshot/slide uploads, downloads, and resource/wiki pages.
+- Multi-day drag-and-drop agenda with automatic scheduling, room/speaker/track/availability conflicts, list/day/week/track/room views, publish gates, and iCalendar export.
+- Personalized email delivery through Resend with `.ics` attachments, provider idempotency, and durable delivery logs.
+- Native one-way Accelevents program sync with a published/accepted/confirmed read model, idempotency, and run/error history.
+- Responsive public speaker gallery and schedule, personal itinerary, and copyable iframe embed.
+- Workspace roles, server-enforced tenant authorization, optimistic concurrency, audit history, and JSON/CSV/ICS portability.
 
-The current version is a functional browser-local MVP designed for hackathon evaluation. Data is persisted in versioned `localStorage`, survives reloads, and flows between the public, speaker, reviewer, and organizer experiences. Seeded data makes every workspace immediately testable.
+## Architecture
+
+The deployed build uses the Sites runtime with:
+
+- D1 for workspace membership, revisioned event state, public submissions, asset metadata, rate limits, audit entries, integration runs, and delivery logs.
+- R2 for private event-scoped file bytes.
+- Trusted hosting identity headers for owner, organizer, reviewer, and speaker access.
+- A Worker API documented in [`db/api-contract.md`](db/api-contract.md).
+
+Local development intentionally uses versioned `localStorage` as an offline preview. Production builds use the shared Worker API and do not treat browser storage as the source of truth.
 
 ## Quick start
 
@@ -23,14 +33,12 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Use the left navigation to move between the organizer and speaker experiences. The **Public event page** link previews the attendee-facing gallery.
+Open `http://localhost:5173`.
 
-Useful direct routes:
-
-- `http://localhost:5173/#/cfp` — anonymous proposal form
+- `http://localhost:5173/#/cfp` — public proposal form
 - `http://localhost:5173/#/reviews` — committee workspace
-- `http://localhost:5173/#/portal` — participant portal simulator
-- `http://localhost:5173/#/event` — published speaker gallery and agenda
+- `http://localhost:5173/#/portal` — participant portal preview
+- `http://localhost:5173/#/event` — public gallery and agenda
 
 ## Verification
 
@@ -38,26 +46,26 @@ Useful direct routes:
 npm test
 npm run lint
 npm run build
+npm audit --omit=dev
 ```
 
-The automated suite covers decisions and onboarding task creation, schedule conflicts, persistence validation, and template rendering.
+The suite covers domain invariants, evaluation rounds, API transport, D1/R2 lifecycle contracts, tenant/RBAC boundaries, CFP enforcement, blind review isolation, optimistic concurrency, provider idempotency, and Resend calendar payloads.
 
-## Integration boundaries
+## Production configuration
 
-- Selected headshots and slide decks persist as file metadata; a static browser app cannot retain file bytes without object storage.
-- Messages are personalized and saved to a durable in-app outbox. External Gmail/Outlook delivery requires provider credentials and a server-side transport.
-- Calendar delivery is provided through standards-compatible ICS downloads.
-- Accelevents is available as a documented one-way CSV export. Direct API sync requires an authenticated Accelevents account.
-- Role selection is simulated for evaluation; production authentication, authorization, multi-tenancy, and server-side audit logging require a backend.
+Required bindings are declared in `.openai/hosting.json`:
 
-## Production build
+- `DB` — D1 database
+- `FILES` — R2 bucket
 
-```bash
-npm run build
-npm run preview
-```
+Optional runtime configuration:
 
-The generated `dist/` directory can be deployed to Cloudflare Pages, Netlify, Vercel, or any static host.
+- `RESEND_API_KEY` and `EMAIL_FROM` — external email/calendar delivery
+- `ACCELEVENTS_API_URL` and `ACCELEVENTS_API_TOKEN` — one-way program sync
+- `ALLOWED_ORIGINS` — additional trusted cross-origin clients
+- `CFP_RATE_LIMIT`, `CFP_RATE_WINDOW_SECONDS`, `MAX_ASSET_BYTES`, and `ALLOWED_ASSET_TYPES` — operational limits
+
+The UI reports provider configuration honestly. Without provider credentials, local outbox, ICS, CSV, and all core program workflows remain available, while external email or Accelevents actions stay disabled.
 
 ## Product principles
 

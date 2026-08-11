@@ -2,14 +2,26 @@ import { createContext, useContext, type Dispatch } from 'react'
 import type { AppState } from '../domain/types'
 import type { AppAction } from './reducer'
 import type { ValidationResult } from './storage'
+import type { DownloadedAsset, OpenSpeakerApiClient, PublicCfpSubmissionInput, PublicCfpSubmissionReceipt, ReviewerMutationInput, UploadedAsset, WorkspaceSession } from '../services'
+
+export type PersistenceMode = 'local' | 'remote' | 'public-readonly'
+export type SyncStatus = 'loading' | 'saved' | 'saving' | 'error' | 'unauthorized'
 
 export interface AppContextValue {
   state: AppState
   dispatch: Dispatch<AppAction>
   persistenceError?: string
+  persistenceMode: PersistenceMode
+  syncStatus: SyncStatus
+  api?: OpenSpeakerApiClient
+  session?: WorkspaceSession
   reset: () => void
   importJson: (json: string) => ValidationResult
   exportJson: () => string
+  submitCfp: (input: PublicCfpSubmissionInput) => Promise<PublicCfpSubmissionReceipt>
+  uploadAsset: (file: File) => Promise<UploadedAsset>
+  downloadAsset: (assetId: string) => Promise<DownloadedAsset>
+  submitAssignedReview: (input: Omit<ReviewerMutationInput, 'expectedRevision'>) => Promise<void>
 }
 
 export const AppContext = createContext<AppContextValue | null>(null)

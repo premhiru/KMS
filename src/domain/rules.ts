@@ -1,6 +1,6 @@
 import type { AppState, Id, Session, Submission } from './types'
 
-export type ScheduleConflictKind = 'invalid-time' | 'outside-event' | 'unknown-room' | 'room-overlap' | 'speaker-overlap' | 'speaker-unavailable'
+export type ScheduleConflictKind = 'invalid-time' | 'outside-event' | 'unknown-room' | 'room-overlap' | 'track-overlap' | 'speaker-overlap' | 'speaker-unavailable'
 
 export interface ScheduleConflict {
   kind: ScheduleConflictKind
@@ -38,10 +38,15 @@ export function conflictsForSession(candidate: Session, state: AppState): Schedu
   }
 
   const candidateSpeakerIds = sessionSpeakerIds(candidate, state.submissions)
+  const candidateTrack = state.submissions.find((submission) => submission.id === candidate.submissionId)?.track
   for (const other of state.sessions) {
     if (other.id === candidate.id || !intervalsOverlap(candidate.startAt, candidate.endAt, other.startAt, other.endAt)) continue
     if (candidate.room === other.room) {
       conflicts.push({ kind: 'room-overlap', sessionId: candidate.id, otherSessionId: other.id, message: `${candidate.room} already has a session at this time.` })
+    }
+    const otherTrack = state.submissions.find((submission) => submission.id === other.submissionId)?.track
+    if (candidateTrack && otherTrack === candidateTrack) {
+      conflicts.push({ kind: 'track-overlap', sessionId: candidate.id, otherSessionId: other.id, message: `${candidateTrack} has overlapping sessions in different rooms.` })
     }
     const sharedSpeakerIds = sessionSpeakerIds(other, state.submissions).filter((speakerId) => candidateSpeakerIds.includes(speakerId))
     if (sharedSpeakerIds.length > 0) {

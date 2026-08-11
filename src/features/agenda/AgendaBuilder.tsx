@@ -1,11 +1,12 @@
-import { useMemo, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useState, type DragEvent } from 'react'
 import { CalendarDays, Download, GripVertical, List, MapPin, Sparkles, TriangleAlert, UploadCloud, X } from 'lucide-react'
 import { agendaToIcs, createId, downloadCsv, downloadIcs, nowIso, selectSubmissionSpeakers, selectUnscheduledSubmissions, speakerName, useApp } from '../../core'
 import { canPublishAgenda, conflictsForSession, findScheduleConflicts, type AppState, type Session, type Submission } from '../../domain'
 import { agendaToAcceleventsCsv } from '../public-event/accelevents'
 import './agenda.css'
+import './agenda-improvements.css'
 
-type AgendaView = 'list' | 'day' | 'track' | 'room'
+type AgendaView = 'list' | 'day' | 'week' | 'track' | 'room'
 
 function formatTime(value: string, timezone: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: 'numeric', minute: '2-digit' }).format(new Date(value))
@@ -21,6 +22,16 @@ function makeSlots(startAt: string, endAt: string, stepMinutes = 30): string[] {
   return slots
 }
 
+function localDay(value: string, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value))
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
+function localHour(value: string, timezone: string): number {
+  return Number(new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: '2-digit', hourCycle: 'h23' }).format(new Date(value)))
+}
+
 function endFor(startAt: string, durationMinutes: number): string {
   return new Date(Date.parse(startAt) + durationMinutes * 60_000).toISOString()
 }
@@ -30,17 +41,45 @@ function sessionSubmission(state: AppState, session: Session): Submission | unde
 }
 
 export function AgendaBuilder() {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, api, persistenceMode } = useApp()
   const [view, setView] = useState<AgendaView>('day')
   const [assigningId, setAssigningId] = useState<string>()
   const [room, setRoom] = useState(state.event.rooms[0] ?? '')
   const [startAt, setStartAt] = useState(state.event.startAt)
+  const eventSlots = useMemo(() => makeSlots(state.event.startAt, state.event.endAt), [state.event.startAt, state.event.endAt])
+  const eventDays = useMemo(() => [...new Set(eventSlots.map((slot) => localDay(slot, state.event.timezone)))], [eventSlots, state.event.timezone])
+  const [selectedDay, setSelectedDay] = useState(eventDays[0] ?? '')
   const [notice, setNotice] = useState('')
+  const [acceleventsConfigured, setAcceleventsConfigured] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const unscheduled = selectUnscheduledSubmissions(state)
   const conflicts = findScheduleConflicts(state)
-  const slots = useMemo(() => makeSlots(state.event.startAt, state.event.endAt), [state.event.startAt, state.event.endAt])
-  const visibleSlots = slots.slice(0, 18)
+  const firstHour = localHour(state.event.startAt, state.event.timezone)
+  const lastHour = localHour(state.event.endAt, state.event.timezone)
+  const slots = useMemo(() => eventSlots.filter((slot) => {
+    const hour = localHour(slot, state.event.timezone)
+    return hour >= firstHour && (lastHour <= firstHour || hour < lastHour)
+  }), [eventSlots, firstHour, lastHour, state.event.timezone])
+  const visibleSlots = slots.filter((slot) => localDay(slot, state.event.timezone) === selectedDay)
   const scheduled = [...state.sessions].sort((left, right) => left.startAt.localeCompare(right.startAt))
+
+  useEffect(() => {
+    if (!api || persistenceMode !== 'remote') return
+    void api.getIntegrationStatus().then((status) => setAcceleventsConfigured(status.configured.accelevents)).catch(() => setAcceleventsConfigured(false))
+  }, [api, persistenceMode])
+
+  const syncAccelevents = async () => {
+    if (!api) return
+    setSyncing(true)
+    try {
+      const result = await api.syncAccelevents(`accelevents-${crypto.randomUUID()}`)
+      setNotice(`Accelevents sync completed: ${result.synced?.sessions ?? 0} sessions and ${result.synced?.speakers ?? 0} speakers. Run ${result.runId}.`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Accelevents sync failed.')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const assign = (submissionId: string, targetRoom: string, targetStart: string) => {
     const submission = state.submissions.find((item) => item.id === submissionId)
@@ -107,7 +146,7 @@ export function AgendaBuilder() {
   const renderSession = (session: Session) => {
     const submission = sessionSubmission(state, session)
     if (!submission) return null
-    return <article className={`agenda-session ${conflicts.some((conflict) => conflict.sessionId === session.id || conflict.otherSessionId === session.id) ? 'has-conflict' : ''}`} key={session.id}>
+    return <article draggable onDragStart={(event) => event.dataTransfer.setData('text/openspeaker-submission', submission.id)} className={`agenda-session ${conflicts.some((conflict) => conflict.sessionId === session.id || conflict.otherSessionId === session.id) ? 'has-conflict' : ''}`} key={session.id}>
       <div><span>{submission.track}</span><strong>{submission.title}</strong><small>{selectSubmissionSpeakers(state, submission.id).map(speakerName).join(', ')}</small></div>
       <p><MapPin size={14}/>{session.room}<CalendarDays size={14}/>{formatDateTime(session.startAt, state.event.timezone)}–{formatTime(session.endAt, state.event.timezone)}</p>
       <div className="agenda-session-actions"><button onClick={() => { setAssigningId(submission.id); setRoom(session.room); setStartAt(session.startAt) }}>Move</button><button onClick={() => dispatch({ type: 'session/delete', id: session.id, at: nowIso() })}>Unschedule</button></div>
@@ -119,11 +158,12 @@ export function AgendaBuilder() {
       <button className="feature-button secondary" onClick={autoSchedule}><Sparkles size={16}/>Auto-schedule</button>
       <button className="feature-button secondary" onClick={() => downloadIcs(`${state.event.slug}.ics`, agendaToIcs(state, false))}><Download size={16}/>ICS</button>
       <button className="feature-button secondary" title="One-way CSV export; API sync requires Accelevents credentials." onClick={() => downloadCsv(`${state.event.slug}-accelevents.csv`, agendaToAcceleventsCsv(state))}><Download size={16}/>Accelevents-ready CSV</button>
+      {persistenceMode === 'remote' && <button className="feature-button secondary" disabled={!acceleventsConfigured || syncing} title={acceleventsConfigured ? 'Sync accepted, published sessions and confirmed speakers one way.' : 'Configure ACCELEVENTS_API_URL and ACCELEVENTS_API_TOKEN.'} onClick={syncAccelevents}><UploadCloud size={16}/>{syncing ? 'Syncing…' : 'Sync Accelevents'}</button>}
       <button className="feature-button primary" disabled={conflicts.length > 0 || state.sessions.length === 0} onClick={publish}><UploadCloud size={16}/>Publish agenda</button>
     </div></header>
 
     {notice && <div className="feature-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={14}/></button></div>}
-    <div className="agenda-toolbar"><div className="view-switch" aria-label="Agenda view">{(['list', 'day', 'track', 'room'] as const).map((item) => <button className={view === item ? 'active' : ''} key={item} onClick={() => setView(item)}>{item}</button>)}</div><span>{state.sessions.length} scheduled · {unscheduled.length} unscheduled · {conflicts.length} conflicts</span></div>
+    <div className="agenda-toolbar"><div className="view-switch" aria-label="Agenda view">{(['list', 'day', 'week', 'track', 'room'] as const).map((item) => <button className={view === item ? 'active' : ''} key={item} onClick={() => setView(item)}>{item}</button>)}</div><span>{state.sessions.length} scheduled · {unscheduled.length} unscheduled · {conflicts.length} conflicts</span></div>
 
     {conflicts.length > 0 && <aside className="conflict-panel" aria-label="Schedule conflicts"><h2><TriangleAlert size={18}/>Conflicts to resolve</h2>{conflicts.map((conflict, index) => <p key={`${conflict.kind}-${conflict.sessionId}-${index}`}><b>{conflict.kind.replaceAll('-', ' ')}</b>{conflict.message}</p>)}</aside>}
 
@@ -133,7 +173,8 @@ export function AgendaBuilder() {
       </article>)}</aside>
 
       <div className="agenda-board">
-        {view === 'day' && <div className="day-grid"><div className="day-grid-head"><span>Time</span>{state.event.rooms.map((item) => <strong key={item}>{item}</strong>)}</div>{visibleSlots.map((slot) => <div className="day-grid-row" key={slot}><time>{formatTime(slot, state.event.timezone)}</time>{state.event.rooms.map((item) => <div className="drop-slot" key={item} onDragOver={(event) => event.preventDefault()} onDrop={(event) => handleDrop(event, item, slot)}>{scheduled.filter((session) => session.room === item && session.startAt === slot).map(renderSession)}</div>)}</div>)}</div>}
+        {view === 'day' && <><div className="agenda-day-picker" aria-label="Agenda day">{eventDays.map((day) => <button className={selectedDay === day ? 'active' : ''} key={day} onClick={() => setSelectedDay(day)}>{new Date(`${day}T12:00:00Z`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</button>)}</div><div className="day-grid"><div className="day-grid-head"><span>Time</span>{state.event.rooms.map((item) => <strong key={item}>{item}</strong>)}</div>{visibleSlots.map((slot) => <div className="day-grid-row" key={slot}><time>{formatTime(slot, state.event.timezone)}</time>{state.event.rooms.map((item) => <div className="drop-slot" key={item} onDragOver={(event) => event.preventDefault()} onDrop={(event) => handleDrop(event, item, slot)}>{scheduled.filter((session) => session.room === item && session.startAt === slot).map(renderSession)}</div>)}</div>)}</div></>}
+        {view === 'week' && <div className="agenda-groups agenda-week">{eventDays.map((day) => <section key={day}><h2>{new Date(`${day}T12:00:00Z`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</h2>{scheduled.filter((session) => localDay(session.startAt, state.event.timezone) === day).map(renderSession)}{scheduled.every((session) => localDay(session.startAt, state.event.timezone) !== day) && <div className="empty-state">No sessions scheduled.</div>}</section>)}</div>}
         {view === 'list' && <div className="agenda-list"><h2><List size={18}/>All scheduled sessions</h2>{scheduled.map(renderSession)}</div>}
         {view === 'track' && <div className="agenda-groups">{state.event.tracks.map((track) => { const items = scheduled.filter((session) => sessionSubmission(state, session)?.track === track); return items.length > 0 && <section key={track}><h2>{track}</h2>{items.map(renderSession)}</section> })}</div>}
         {view === 'room' && <div className="agenda-groups">{state.event.rooms.map((item) => <section key={item}><h2>{item}</h2>{scheduled.filter((session) => session.room === item).map(renderSession)}</section>)}</div>}

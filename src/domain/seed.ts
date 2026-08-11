@@ -88,10 +88,42 @@ export function createSeedState(): AppState {
       { id: 'submission-design', title: 'Designing human-centered AI products', abstract: 'Hands-on methods for learning where AI helps and where it should step aside.', track: 'Product & design', format: 'Workshop', durationMinutes: 60, speakerIds: ['speaker-amelia'], status: 'accepted', tags: ['design', 'product'], createdAt: '2026-07-05T09:00:00.000Z', updatedAt: SEEDED_AT },
       { id: 'submission-tools', title: 'Developer experience for probabilistic software', abstract: 'Tooling patterns that make nondeterministic systems understandable.', track: 'Developer tools', format: 'Talk', durationMinutes: 30, speakerIds: ['speaker-leo'], status: 'needs-review', tags: ['developer-tools'], createdAt: '2026-07-06T09:00:00.000Z', updatedAt: SEEDED_AT },
     ],
+    evaluationPlans: [
+      { id: 'evaluation-plan-program', name: 'Program committee review', instructions: 'Prioritize practical, original sessions with clear takeaways for AI engineers.', createdAt: SEEDED_AT, updatedAt: SEEDED_AT },
+    ],
+    evaluationRounds: [
+      {
+        id: 'evaluation-round-committee', planId: 'evaluation-plan-program', name: 'Committee review', position: 1, status: 'open', opensAt: '2026-08-11T00:00:00.000Z', dueAt: '2026-08-24T23:59:00.000Z', blind: false,
+        instructions: 'Review the complete proposal and leave evidence for your score.',
+        rubric: [
+          { id: 'relevance', label: 'Relevance', description: 'Fit for the event audience and track.', weight: 35, maxScore: 5 },
+          { id: 'originality', label: 'Originality', description: 'Fresh evidence or practical insight.', weight: 25, maxScore: 5 },
+          { id: 'clarity', label: 'Clarity', description: 'Focused premise and takeaways.', weight: 20, maxScore: 5 },
+          { id: 'speaker-fit', label: 'Speaker fit', description: 'Experience to deliver this session.', weight: 20, maxScore: 5 },
+        ],
+        filter: { submissionStatuses: ['needs-review', 'in-review', 'accepted'] }, createdAt: SEEDED_AT, updatedAt: SEEDED_AT,
+      },
+      {
+        id: 'evaluation-round-final', planId: 'evaluation-plan-program', name: 'Final programming review', position: 2, status: 'draft', dueAt: '2026-09-01T23:59:00.000Z', blind: true,
+        instructions: 'Review finalists without speaker identity and focus on program balance.',
+        rubric: [
+          { id: 'program-fit', label: 'Program fit', weight: 60, maxScore: 5 },
+          { id: 'distinctiveness', label: 'Distinctiveness', weight: 40, maxScore: 5 },
+        ],
+        createdAt: SEEDED_AT, updatedAt: SEEDED_AT,
+      },
+    ],
+    evaluationAssignments: [
+      { id: 'assignment-agents-sarah', roundId: 'evaluation-round-committee', submissionId: 'submission-agents', reviewerName: 'Sarah Lin', reviewerEmail: 'sarah@example.com', status: 'completed', assignedAt: SEEDED_AT, completedAt: SEEDED_AT, updatedAt: SEEDED_AT },
+      { id: 'assignment-evals-sarah', roundId: 'evaluation-round-committee', submissionId: 'submission-evals', reviewerName: 'Sarah Lin', reviewerEmail: 'sarah@example.com', status: 'completed', assignedAt: SEEDED_AT, completedAt: SEEDED_AT, updatedAt: SEEDED_AT },
+      { id: 'assignment-edge-nora', roundId: 'evaluation-round-committee', submissionId: 'submission-edge', reviewerName: 'Nora James', reviewerEmail: 'nora@example.com', status: 'completed', assignedAt: SEEDED_AT, completedAt: SEEDED_AT, updatedAt: SEEDED_AT },
+      { id: 'assignment-tools-sarah', roundId: 'evaluation-round-committee', submissionId: 'submission-tools', reviewerName: 'Sarah Lin', reviewerEmail: 'sarah@example.com', status: 'assigned', assignedAt: SEEDED_AT, updatedAt: SEEDED_AT },
+    ],
+    evaluationAdvancements: [],
     reviews: [
-      { id: 'review-agents-1', submissionId: 'submission-agents', reviewerName: 'Sarah Lin', scores: { relevance: 5, originality: 5, clarity: 5, 'speaker-fit': 4 }, note: 'Strong practical story and clear takeaways.', updatedAt: SEEDED_AT },
-      { id: 'review-evals-1', submissionId: 'submission-evals', reviewerName: 'Sarah Lin', scores: { relevance: 5, originality: 4, clarity: 5, 'speaker-fit': 5 }, note: 'Excellent fit for the audience.', updatedAt: SEEDED_AT },
-      { id: 'review-edge-1', submissionId: 'submission-edge', reviewerName: 'Nora James', scores: { relevance: 4, originality: 5, clarity: 4, 'speaker-fit': 4 }, note: 'Needs a little more detail on the live demo.', updatedAt: SEEDED_AT },
+      { id: 'review-agents-1', submissionId: 'submission-agents', roundId: 'evaluation-round-committee', assignmentId: 'assignment-agents-sarah', reviewerName: 'Sarah Lin', scores: { relevance: 5, originality: 5, clarity: 5, 'speaker-fit': 4 }, note: 'Strong practical story and clear takeaways.', updatedAt: SEEDED_AT },
+      { id: 'review-evals-1', submissionId: 'submission-evals', roundId: 'evaluation-round-committee', assignmentId: 'assignment-evals-sarah', reviewerName: 'Sarah Lin', scores: { relevance: 5, originality: 4, clarity: 5, 'speaker-fit': 5 }, note: 'Excellent fit for the audience.', updatedAt: SEEDED_AT },
+      { id: 'review-edge-1', submissionId: 'submission-edge', roundId: 'evaluation-round-committee', assignmentId: 'assignment-edge-nora', reviewerName: 'Nora James', scores: { relevance: 4, originality: 5, clarity: 4, 'speaker-fit': 4 }, note: 'Needs a little more detail on the live demo.', updatedAt: SEEDED_AT },
     ],
     tasks: structuredClone(tasks),
     sessions: [

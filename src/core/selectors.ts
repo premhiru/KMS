@@ -1,5 +1,5 @@
 import { reviewAverage } from '../domain/rules'
-import type { AppState, Id, MessageAudience, OnboardingTask, Speaker, Submission } from '../domain/types'
+import type { AppState, EvaluationAssignmentStatus, EvaluationRound, Id, MessageAudience, OnboardingTask, Review, Speaker, Submission } from '../domain/types'
 
 export function speakerName(speaker: Pick<Speaker, 'firstName' | 'lastName'>): string {
   return `${speaker.firstName} ${speaker.lastName}`.trim()
@@ -26,6 +26,97 @@ export function selectSubmissionScore(state: AppState, submissionId: Id): number
   const reviews = selectReviewsForSubmission(state, submissionId)
   if (reviews.length === 0) return undefined
   return reviews.reduce((sum, review) => sum + reviewAverage(review.scores), 0) / reviews.length
+}
+
+export function selectEvaluationRounds(state: AppState, planId?: Id): EvaluationRound[] {
+  return (state.evaluationRounds ?? [])
+    .filter((round) => !planId || round.planId === planId)
+    .sort((left, right) => left.position - right.position || left.createdAt.localeCompare(right.createdAt))
+}
+
+export function selectRoundAssignments(state: AppState, roundId: Id) {
+  return (state.evaluationAssignments ?? []).filter((assignment) => assignment.roundId === roundId)
+}
+
+export function selectEligibleSubmissionsForRound(state: AppState, round: EvaluationRound): Submission[] {
+  const filter = round.filter
+  return state.submissions.filter((submission) => (
+    (!filter?.tracks?.length || filter.tracks.includes(submission.track))
+    && (!filter?.formats?.length || filter.formats.includes(submission.format))
+    && (!filter?.submissionStatuses?.length || filter.submissionStatuses.includes(submission.status))
+  ))
+}
+
+export function weightedReviewAverage(round: Pick<EvaluationRound, 'rubric'>, review: Pick<Review, 'scores'>): number {
+  const weighted = round.rubric.filter((criterion) => criterion.weight > 0 && criterion.maxScore > 0 && Number.isFinite(review.scores[criterion.id]))
+  const totalWeight = weighted.reduce((sum, criterion) => sum + criterion.weight, 0)
+  if (totalWeight === 0) return 0
+  const normalized = weighted.reduce((sum, criterion) => sum + (Math.max(0, Math.min(criterion.maxScore, review.scores[criterion.id])) / criterion.maxScore) * criterion.weight, 0) / totalWeight
+  return normalized * 5
+}
+
+export function selectWeightedReviewScore(state: AppState, review: Review): number {
+  const round = (state.evaluationRounds ?? []).find((item) => item.id === review.roundId)
+  return round ? weightedReviewAverage(round, review) : reviewAverage(review.scores)
+}
+
+export function selectRoundSubmissionScore(state: AppState, roundId: Id, submissionId: Id): number | undefined {
+  const reviews = state.reviews.filter((review) => review.roundId === roundId && review.submissionId === submissionId)
+  if (reviews.length === 0) return undefined
+  return reviews.reduce((sum, review) => sum + selectWeightedReviewScore(state, review), 0) / reviews.length
+}
+
+export function selectEvaluationRoundProgress(state: AppState, roundId: Id) {
+  const assignments = selectRoundAssignments(state, roundId)
+  const completed = assignments.filter((assignment) => assignment.status === 'completed').length
+  const abstained = assignments.filter((assignment) => assignment.status === 'abstained').length
+  const terminal = completed + abstained
+  return {
+    total: assignments.length,
+    assigned: assignments.filter((assignment) => assignment.status === 'assigned').length,
+    inProgress: assignments.filter((assignment) => assignment.status === 'in-progress').length,
+    completed,
+    abstained,
+    terminal,
+    percent: assignments.length === 0 ? 0 : Math.round(terminal / assignments.length * 100),
+  }
+}
+
+export interface ReviewerQueueItem {
+  assignment: NonNullable<AppState['evaluationAssignments']>[number]
+  round: EvaluationRound
+  submission: Submission
+  speakers: Speaker[]
+  blind: boolean
+}
+
+export interface ReviewerQueueOptions {
+  roundId?: Id
+  statuses?: EvaluationAssignmentStatus[]
+}
+
+export function selectReviewerQueue(state: AppState, reviewerEmail: string, options: ReviewerQueueOptions = {}): ReviewerQueueItem[] {
+  const email = reviewerEmail.trim().toLowerCase()
+  const rounds = new Map((state.evaluationRounds ?? []).map((round) => [round.id, round]))
+  return (state.evaluationAssignments ?? []).flatMap((assignment) => {
+    if (assignment.reviewerEmail.trim().toLowerCase() !== email || (options.roundId && assignment.roundId !== options.roundId) || (options.statuses && !options.statuses.includes(assignment.status))) return []
+    const round = rounds.get(assignment.roundId)
+    const submission = state.submissions.find((item) => item.id === assignment.submissionId)
+    if (!round || !submission) return []
+    const blind = round.blind
+    const visibleSubmission = blind ? { ...submission, speakerIds: [] } : submission
+    return [{ assignment, round, submission: visibleSubmission, speakers: blind ? [] : selectSubmissionSpeakers(state, submission.id), blind }]
+  }).sort((left, right) => left.round.position - right.round.position || left.assignment.assignedAt.localeCompare(right.assignment.assignedAt))
+}
+
+export function selectNextEvaluationRound(state: AppState, roundId: Id): EvaluationRound | undefined {
+  const current = (state.evaluationRounds ?? []).find((round) => round.id === roundId)
+  if (!current) return undefined
+  return selectEvaluationRounds(state, current.planId).find((round) => round.position > current.position)
+}
+
+export function hasAdvancedSubmission(state: AppState, submissionId: Id, fromRoundId: Id, toRoundId: Id): boolean {
+  return (state.evaluationAdvancements ?? []).some((advancement) => advancement.submissionId === submissionId && advancement.fromRoundId === fromRoundId && advancement.toRoundId === toRoundId)
 }
 
 export function selectTasksForSpeaker(state: AppState, speakerId: Id): OnboardingTask[] {

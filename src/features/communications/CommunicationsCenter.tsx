@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CalendarPlus, Check, Download, Edit3, Mail, Plus, Send, Trash2, X } from 'lucide-react'
 import { agendaToIcs, createId, downloadIcs, nowIso, renderTemplate, selectAudienceSpeakerIds, speakerName, useApp } from '../../core'
 import type { MessageAudience, MessageTemplate } from '../../domain'
@@ -16,12 +16,14 @@ interface TemplateDraft {
 const emptyDraft: TemplateDraft = { name: '', subject: '', body: '', audience: 'accepted', enabled: true }
 
 export function CommunicationsCenter() {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, api, persistenceMode } = useApp()
   const [draft, setDraft] = useState<TemplateDraft>()
   const [selectedTemplateId, setSelectedTemplateId] = useState(state.templates[0]?.id ?? '')
   const [audience, setAudience] = useState<MessageAudience>(state.templates[0]?.audience ?? 'accepted')
   const [customIds, setCustomIds] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+  const [emailConfigured, setEmailConfigured] = useState(false)
+  const [sending, setSending] = useState(false)
   const selectedTemplate = state.templates.find((template) => template.id === selectedTemplateId)
   const recipientIds = selectAudienceSpeakerIds(state, audience, customIds)
   const previewSpeaker = state.speakers.find((speaker) => speaker.id === recipientIds[0])
@@ -29,6 +31,11 @@ export function CommunicationsCenter() {
   const previewTask = state.tasks.find((task) => previewSpeaker && task.speakerId === previewSpeaker.id && !task.completedAt)
   const preview = selectedTemplate ? renderTemplate(selectedTemplate, { event: state.event, speaker: previewSpeaker, submission: previewSubmission, task: previewTask }) : undefined
   const outbox = useMemo(() => [...state.communicationLog].sort((left, right) => right.sentAt.localeCompare(left.sentAt)), [state.communicationLog])
+
+  useEffect(() => {
+    if (!api || persistenceMode !== 'remote') return
+    void api.getIntegrationStatus().then((status) => setEmailConfigured(status.configured.resend)).catch(() => setEmailConfigured(false))
+  }, [api, persistenceMode])
 
   const chooseTemplate = (template: MessageTemplate) => {
     setSelectedTemplateId(template.id)
@@ -72,9 +79,33 @@ export function CommunicationsCenter() {
     setNotice(`${recipientIds.length} personalized message${recipientIds.length === 1 ? '' : 's'} saved to the in-app outbox.`)
   }
 
+  const sendExternal = async () => {
+    if (!api || !selectedTemplate || recipientIds.length === 0) { setNotice('Choose a template and at least one recipient.'); return }
+    setSending(true)
+    try {
+      const calendar = agendaToIcs(state)
+      const messages = recipientIds.flatMap((speakerId) => {
+        const speaker = state.speakers.find((item) => item.id === speakerId)
+        if (!speaker) return []
+        const submission = state.submissions.find((item) => item.speakerIds.includes(speakerId))
+        const task = state.tasks.find((item) => item.speakerId === speakerId && !item.completedAt)
+        const rendered = renderTemplate(selectedTemplate, { event: state.event, speaker, submission, task })
+        return [{ speakerId, subject: rendered.subject, text: rendered.body, attachment: { filename: `${state.event.slug}.ics`, content: calendar, type: 'text/calendar' as const } }]
+      })
+      const receipt = await api.sendEmail({ idempotencyKey: `email-${crypto.randomUUID()}`, messages })
+      const at = nowIso()
+      for (const message of messages) dispatch({ type: 'communication/log', entry: { id: createId('message'), templateId: selectedTemplate.id, recipientSpeakerIds: [message.speakerId], subject: message.subject, body: message.text, channel: 'email', status: receipt.status === 'failed' ? 'failed' : 'sent', sentAt: at }, at })
+      setNotice(`${receipt.result.sent ?? messages.length} email${messages.length === 1 ? '' : 's'} sent with calendar attachment. Run ${receipt.runId}.`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Email delivery failed.')
+    } finally {
+      setSending(false)
+    }
+  }
+
   return <section className="communications-feature">
     <header className="feature-heading"><div><p>SPEAKER COMMUNICATIONS</p><h1>Communications</h1><span>Create reusable templates, preview personalization, and keep a durable delivery log.</span></div><div className="feature-actions"><button className="feature-button secondary" onClick={() => downloadIcs(`${state.event.slug}-calendar.ics`, agendaToIcs(state))}><CalendarPlus size={16}/>Download calendar invite</button><button className="feature-button primary" onClick={() => setDraft(emptyDraft)}><Plus size={16}/>New template</button></div></header>
-    <div className="delivery-disclosure"><Mail size={17}/><p><b>In-app outbox delivery</b> Messages are rendered and logged locally. Connect an authenticated email provider before claiming external delivery.</p></div>
+    <div className="delivery-disclosure"><Mail size={17}/><p><b>{emailConfigured ? 'Resend delivery connected' : 'Email provider not configured'}</b> {emailConfigured ? 'Personalized messages are delivered with an iCalendar attachment and logged server-side.' : 'The in-app outbox remains available; configure RESEND_API_KEY and EMAIL_FROM for external delivery.'}</p></div>
     {notice && <div className="feature-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={14}/></button></div>}
 
     <div className="communications-layout">
@@ -90,7 +121,7 @@ export function CommunicationsCenter() {
           {audience === 'custom' && <div className="recipient-picker">{state.speakers.map((speaker) => <label key={speaker.id}><input type="checkbox" checked={customIds.includes(speaker.id)} onChange={(event) => setCustomIds(event.target.checked ? [...customIds, speaker.id] : customIds.filter((id) => id !== speaker.id))}/>{speakerName(speaker)}</label>)}</div>}
           <div className="recipient-count">{recipientIds.length} recipient{recipientIds.length === 1 ? '' : 's'}</div>
           <div className="message-preview"><span>PREVIEW {previewSpeaker ? `FOR ${speakerName(previewSpeaker).toUpperCase()}` : ''}</span><h3>{preview?.subject ?? selectedTemplate.subject}</h3><p>{preview?.body ?? selectedTemplate.body}</p>{preview && preview.unresolvedTokens.length > 0 && <small>Unresolved for this recipient: {preview.unresolvedTokens.join(', ')}</small>}</div>
-          <button className="feature-button primary send-button" onClick={sendToOutbox}><Send size={16}/>Render and send to outbox</button>
+          <div className="feature-actions"><button className="feature-button secondary send-button" onClick={sendToOutbox}><Send size={16}/>Save to outbox</button>{persistenceMode === 'remote' && <button className="feature-button primary send-button" disabled={!emailConfigured || sending} onClick={sendExternal}><Send size={16}/>{sending ? 'Sending…' : 'Send email + calendar'}</button>}</div>
         </>}
       </main>
     </div>

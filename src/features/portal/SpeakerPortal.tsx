@@ -1,7 +1,8 @@
-import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
-import { nowIso, selectOnboardingPercent, selectTasksForSpeaker, speakerName, useAppDispatch, useAppState } from '../../core'
+import { useState, type ChangeEvent, type FormEvent } from 'react'
+import { nowIso, selectOnboardingPercent, selectTasksForSpeaker, speakerName, useApp, useAppDispatch, useAppState } from '../../core'
 import type { AssetMetadata, OnboardingTask, Speaker } from '../../domain'
 import './SpeakerPortal.css'
+import './portal-improvements.css'
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value))
@@ -47,7 +48,7 @@ function AcceptanceCard({ speaker, announce }: { speaker: Speaker; announce: (me
         <h2 id="portal-response-heading">
           {speaker.status === 'confirmed' ? 'You’re confirmed!' : speaker.status === 'declined' ? 'You declined this invitation' : 'Will you join us?'}
         </h2>
-        <p>{speaker.status === 'invited' ? 'Let the event team know whether you can participate.' : 'Your response is saved in this browser.'}</p>
+        <p>{speaker.status === 'invited' ? 'Let the event team know whether you can participate.' : 'Your response is saved to the event workspace.'}</p>
       </div>
       <div className="portal-response-actions">
         <button type="button" className="portal-button portal-button-primary" aria-pressed={speaker.status === 'confirmed'} onClick={() => respond('confirmed')}>Accept invitation</button>
@@ -110,24 +111,57 @@ function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (messa
 }
 
 function UploadControl({ task, announce }: { task: OnboardingTask; announce: (message: string) => void }) {
-  const dispatch = useAppDispatch()
+  const { dispatch, persistenceMode, uploadAsset, downloadAsset } = useApp()
+  const [uploading, setUploading] = useState(false)
   const isHeadshot = task.kind === 'headshot'
   const accept = isHeadshot ? 'image/jpeg,image/png,image/webp' : '.pdf,.ppt,.pptx,.key,application/pdf'
-  const chooseFile = (event: ChangeEvent<HTMLInputElement>) => {
+  const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
     const at = nowIso()
-    const asset: AssetMetadata = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, selectedAt: at }
-    dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, at })
-    announce(`${file.name} metadata saved. The file itself remains on this device and is not uploaded.`)
+    setUploading(true)
+    try {
+      if (persistenceMode === 'remote') {
+        const uploaded = await uploadAsset(file)
+        const asset: AssetMetadata = { id: uploaded.id, name: uploaded.fileName, type: uploaded.contentType, size: uploaded.sizeBytes, selectedAt: uploaded.createdAt, storage: 'r2' }
+        dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, at })
+        announce(`${file.name} uploaded to durable private storage.`)
+      } else {
+        const asset: AssetMetadata = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, selectedAt: at, storage: 'local-metadata' }
+        dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, at })
+        announce(`${file.name} metadata saved locally.`)
+      }
+    } catch (error) {
+      announce(error instanceof Error ? error.message : 'The file could not be uploaded.')
+    } finally {
+      setUploading(false)
+      event.target.value = ''
+    }
+  }
+
+  const download = async () => {
+    if (!task.asset?.id) return
+    try {
+      const result = await downloadAsset(task.asset.id)
+      const href = URL.createObjectURL(result.blob)
+      const anchor = document.createElement('a')
+      anchor.href = href
+      anchor.download = result.fileName
+      anchor.click()
+      URL.revokeObjectURL(href)
+      announce(`${result.fileName} downloaded.`)
+    } catch (error) {
+      announce(error instanceof Error ? error.message : 'The file could not be downloaded.')
+    }
   }
 
   return (
     <div className="portal-upload">
-      {task.asset && <p><strong>{task.asset.name}</strong><span>{formatBytes(task.asset.size)} · {task.asset.type} · selected {formatDate(task.asset.selectedAt)}</span></p>}
+      {task.asset && <p><strong>{task.asset.name}</strong><span>{formatBytes(task.asset.size)} · {task.asset.type} · {task.asset.storage === 'r2' ? 'stored securely' : 'selected'} {formatDate(task.asset.selectedAt)}</span></p>}
+      {task.asset?.id && <button className="portal-button portal-button-secondary" type="button" onClick={download}>Download</button>}
       <label className="portal-button portal-button-secondary">
-        <span>{task.asset ? 'Choose a different file' : 'Choose file'}</span>
-        <input type="file" accept={accept} onChange={chooseFile} />
+        <span>{uploading ? 'Uploading…' : task.asset ? 'Choose a different file' : 'Choose file'}</span>
+        <input type="file" accept={accept} disabled={uploading} onChange={chooseFile} />
       </label>
     </div>
   )
@@ -157,7 +191,7 @@ function OnboardingChecklist({ speaker, announce }: { speaker: Speaker; announce
           return (
             <li key={task.id} className={task.completedAt ? 'is-complete' : ''}>
               <div className="portal-task-main">
-                <input id={inputId} type="checkbox" checked={Boolean(task.completedAt)} onChange={(event) => toggle(task, event.target.checked)} />
+                <input id={inputId} type="checkbox" checked={Boolean(task.completedAt)} disabled={hasUpload && !task.asset} onChange={(event) => toggle(task, event.target.checked)} />
                 <label htmlFor={inputId}>
                   <strong>{task.title}{task.kind === 'agreement' ? ' (agreement)' : ''}</strong>
                   <small>{task.completedAt ? `Completed ${formatDate(task.completedAt)}` : `Due ${formatDate(task.dueAt)}`}</small>
@@ -168,32 +202,33 @@ function OnboardingChecklist({ speaker, announce }: { speaker: Speaker; announce
           )
         })}
       </ul>
-      <p className="portal-storage-note"><strong>Browser-local demo:</strong> file name, type, size, and selection time are saved. File contents are not uploaded or retained.</p>
+      <StorageNotice />
     </section>
   )
+}
+
+function StorageNotice() {
+  const { persistenceMode } = useApp()
+  return <p className="portal-storage-note">{persistenceMode === 'remote' ? <><strong>Private durable storage:</strong> uploaded file bytes are retained in event-scoped object storage and require workspace access to download.</> : <><strong>Local preview:</strong> only file metadata is retained in this browser.</>}</p>
 }
 
 function Resources() {
+  const state = useAppState()
+  const resources = state.event.resources ?? []
+  const safeEmbedUrl = (value?: string) => {
+    if (!value) return undefined
+    try {
+      const url = new URL(value)
+      return url.protocol === 'https:' ? url.toString() : undefined
+    } catch {
+      return undefined
+    }
+  }
   return (
     <section className="portal-card portal-resources" aria-labelledby="portal-resources-heading">
       <div className="portal-card-heading"><div><p className="portal-kicker">Speaker wiki</p><h2 id="portal-resources-heading">Event resources</h2></div></div>
-      <details><summary>Venue and arrival guide</summary><p>Arrive at least 45 minutes before your session. Check in at the speaker desk near the main entrance.</p></details>
-      <details><summary>AV and presentation tips</summary><p>Use 16:9 slides, bring a backup PDF, and avoid relying on embedded web demos without a recording.</p></details>
-      <details><summary>Accessibility checklist</summary><p>Use high-contrast slides, describe meaningful visuals, and share terminology before using acronyms.</p></details>
-      <details><summary>Speaker support contacts</summary><p>Email speakers@event.example for program questions. Visit the production desk for same-day AV support.</p></details>
-    </section>
-  )
-}
-
-function SafeEmbedPreview() {
-  const [html, setHtml] = useState('<h3>Session links</h3><p>Read the <a href="https://example.com">speaker guide</a> before arrival.</p>')
-  const sanitized = useMemo(() => sanitizeHtml(html), [html])
-  return (
-    <section className="portal-card portal-embed" aria-labelledby="portal-embed-heading">
-      <div className="portal-card-heading"><div><p className="portal-kicker">Optional preview tool</p><h2 id="portal-embed-heading">Safe wiki embed preview</h2></div></div>
-      <label>HTML snippet<textarea rows={5} value={html} onChange={(event) => setHtml(event.target.value)} /></label>
-      <p className="portal-storage-note">Only headings, paragraphs, lists, emphasis, code, and safe links are retained. Scripts, styles, images, and event attributes are removed.</p>
-      <div className="portal-safe-preview" aria-label="Sanitized HTML preview" dangerouslySetInnerHTML={{ __html: sanitized }} />
+      {resources.length === 0 && <p className="portal-storage-note">No resources have been published for this event.</p>}
+      {resources.map((resource) => { const embedUrl = safeEmbedUrl(resource.embedUrl); return <details key={resource.id}><summary>{resource.title}</summary><div className="portal-safe-preview" dangerouslySetInnerHTML={{ __html: sanitizeHtml(resource.body) }} />{embedUrl && <iframe title={`${resource.title} embedded resource`} src={embedUrl} sandbox="allow-scripts allow-popups allow-presentation" loading="lazy" referrerPolicy="no-referrer" />}</details> })}
     </section>
   )
 }
@@ -211,7 +246,7 @@ function PortalWorkspace({ speaker }: { speaker: Speaker }) {
       </div>
       <AcceptanceCard speaker={speaker} announce={setAnnouncement} />
       <div className="portal-columns">
-        <div><ProfileForm speaker={speaker} announce={setAnnouncement} /><SafeEmbedPreview /></div>
+        <div><ProfileForm speaker={speaker} announce={setAnnouncement} /></div>
         <div><OnboardingChecklist speaker={speaker} announce={setAnnouncement} /><Resources /></div>
       </div>
     </>
@@ -219,15 +254,15 @@ function PortalWorkspace({ speaker }: { speaker: Speaker }) {
 }
 
 export function SpeakerPortal() {
-  const state = useAppState()
+  const { state, session } = useApp()
   const [speakerId, setSpeakerId] = useState(state.speakers[0]?.id ?? '')
   const speaker = state.speakers.find((item) => item.id === speakerId) ?? state.speakers[0]
   return (
     <div className="participant-portal">
-      <div className="portal-demo-switcher">
+      {session?.role !== 'speaker' && <div className="portal-demo-switcher">
         <div><strong>Participant portal demo</strong><span>Choose a speaker to simulate their private sign-in.</span></div>
         <label>Signed in as<select value={speaker?.id ?? ''} onChange={(event) => setSpeakerId(event.target.value)}>{state.speakers.map((item) => <option key={item.id} value={item.id}>{speakerName(item)} · {item.email}</option>)}</select></label>
-      </div>
+      </div>}
       {speaker ? <PortalWorkspace key={speaker.id} speaker={speaker} /> : <div className="portal-card"><h1>No speakers yet</h1><p>An organizer must add a speaker before the portal can be previewed.</p></div>}
     </div>
   )

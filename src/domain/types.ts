@@ -8,6 +8,8 @@ export type SpeakerStatus = 'invited' | 'confirmed' | 'declined'
 export type TaskKind = 'agreement' | 'profile' | 'session-details' | 'headshot' | 'slides'
 export type ReviewCriterion = 'relevance' | 'originality' | 'clarity' | 'speaker-fit'
 export type MessageAudience = 'accepted' | 'confirmed' | 'incomplete-onboarding' | 'overdue-tasks' | 'custom'
+export type EvaluationRoundStatus = 'draft' | 'open' | 'closed'
+export type EvaluationAssignmentStatus = 'assigned' | 'in-progress' | 'completed' | 'abstained'
 
 export type CfpFieldType = 'text' | 'textarea' | 'select' | 'checkbox'
 
@@ -59,10 +61,12 @@ export interface AvailabilityWindow {
 }
 
 export interface AssetMetadata {
+  id?: Id
   name: string
   type: string
   size: number
   selectedAt: ISODateTime
+  storage?: 'local-metadata' | 'r2'
 }
 
 export interface Speaker {
@@ -99,9 +103,75 @@ export interface Review {
   id: Id
   submissionId: Id
   reviewerName: string
-  scores: Record<ReviewCriterion, number>
+  /** Legacy reviews may not have a round or assignment. */
+  roundId?: Id
+  assignmentId?: Id
+  scores: Record<string, number>
   note: string
   updatedAt: ISODateTime
+}
+
+export interface RubricCriterion {
+  id: Id
+  label: string
+  description?: string
+  /** Relative weight. A round's positive weights are normalized at scoring time. */
+  weight: number
+  maxScore: number
+}
+
+export interface EvaluationPlan {
+  id: Id
+  name: string
+  instructions: string
+  createdAt: ISODateTime
+  updatedAt: ISODateTime
+}
+
+export interface EvaluationRoundFilter {
+  tracks?: string[]
+  formats?: string[]
+  submissionStatuses?: SubmissionStatus[]
+}
+
+export interface EvaluationRound {
+  id: Id
+  planId: Id
+  name: string
+  position: number
+  status: EvaluationRoundStatus
+  opensAt?: ISODateTime
+  dueAt: ISODateTime
+  blind: boolean
+  instructions: string
+  rubric: RubricCriterion[]
+  filter?: EvaluationRoundFilter
+  createdAt: ISODateTime
+  updatedAt: ISODateTime
+}
+
+export interface EvaluationAssignment {
+  id: Id
+  roundId: Id
+  submissionId: Id
+  reviewerName: string
+  reviewerEmail: string
+  status: EvaluationAssignmentStatus
+  assignedAt: ISODateTime
+  startedAt?: ISODateTime
+  completedAt?: ISODateTime
+  abstainedAt?: ISODateTime
+  abstainReason?: string
+  updatedAt: ISODateTime
+}
+
+export interface EvaluationAdvancement {
+  id: Id
+  planId: Id
+  submissionId: Id
+  fromRoundId: Id
+  toRoundId: Id
+  advancedAt: ISODateTime
 }
 
 export interface OnboardingTask {
@@ -153,6 +223,11 @@ export interface AppState {
   speakers: Speaker[]
   submissions: Submission[]
   reviews: Review[]
+  /** Optional for backwards compatibility with schema-v1 browser backups. */
+  evaluationPlans?: EvaluationPlan[]
+  evaluationRounds?: EvaluationRound[]
+  evaluationAssignments?: EvaluationAssignment[]
+  evaluationAdvancements?: EvaluationAdvancement[]
   tasks: OnboardingTask[]
   sessions: Session[]
   templates: MessageTemplate[]

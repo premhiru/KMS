@@ -1,0 +1,5 @@
+.agenda-day-picker{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--af-line);position:sticky;left:0}
+.agenda-day-picker button{border:1px solid var(--af-line);background:#fff;border-radius:7px;padding:6px 10px;font-size:10px}
+.agenda-day-picker button.active{background:#6658d6;color:#fff;border-color:#6658d6}
+.agenda-session[draggable="true"]{cursor:grab}
+.agenda-week{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}

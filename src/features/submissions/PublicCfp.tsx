@@ -41,7 +41,7 @@ export interface PublicCfpProps {
 }
 
 export function PublicCfp({ onSubmitted }: PublicCfpProps) {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, persistenceMode, submitCfp } = useApp()
   const cfp = state.event.cfp
   const defaultTrack = state.event.tracks[0] ?? 'General'
   const tracks = state.event.tracks.length > 0 ? state.event.tracks : [defaultTrack]
@@ -52,6 +52,8 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitted, setSubmitted] = useState<{ id: Id; title: string; email: string }>()
+  const [submitting, setSubmitting] = useState(false)
+  const [serverError, setServerError] = useState<string>()
 
   const visibleQuestions = useMemo(() => (cfp?.questions ?? []).filter((question) => {
     if (!question.showWhen) return true
@@ -107,7 +109,7 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
     return next
   }
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (closed) return
     const nextErrors = validate()
@@ -120,6 +122,30 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) {
       window.requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus())
+      return
+    }
+
+    if (persistenceMode !== 'local') {
+      setSubmitting(true)
+      setServerError(undefined)
+      try {
+        const receipt = await submitCfp({
+          title: proposal.title.trim(), abstract: proposal.abstract.trim(),
+          speakerName: `${speaker.firstName.trim()} ${speaker.lastName.trim()}`,
+          speakerEmail: speaker.email.trim().toLowerCase(), track: proposal.track, format: proposal.format, consent: true,
+          category: proposal.category, durationMinutes: Number(proposal.duration),
+          tags: proposal.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+          speakerProfile: { ...speaker, email: speaker.email.trim().toLowerCase() },
+          coSpeakers: includeCoSpeaker ? [{ name: `${coSpeaker.firstName.trim()} ${coSpeaker.lastName.trim()}`, ...coSpeaker, email: coSpeaker.email.trim().toLowerCase() }] : [],
+          customAnswers: { ...answers, result: proposal.result.trim(), workshopPlan: proposal.workshopPlan.trim() },
+        })
+        setSubmitted({ id: receipt.id, title: proposal.title.trim(), email: speaker.email.trim().toLowerCase() })
+        onSubmitted?.(receipt.id)
+      } catch (error) {
+        setServerError(error instanceof Error ? error.message : 'The proposal could not be submitted. Please try again.')
+      } finally {
+        setSubmitting(false)
+      }
       return
     }
 
@@ -230,7 +256,8 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
           </section>
 
           {Object.keys(errors).length > 0 && <div className="sb-form-error" role="alert">Please correct the highlighted fields before submitting.</div>}
-          <div className="sb-cfp-submit"><p>By submitting, you agree that the program committee may review and contact you about this proposal.</p><button className="sb-button sb-button--primary sb-button--large" type="submit">Submit proposal <ArrowRight aria-hidden="true" /></button></div>
+          {serverError && <div className="sb-form-error" role="alert">{serverError}</div>}
+          <div className="sb-cfp-submit"><p>By submitting, you agree that the program committee may review and contact you about this proposal.</p><button className="sb-button sb-button--primary sb-button--large" type="submit" disabled={submitting}>{submitting ? 'Submitting…' : 'Submit proposal'} {!submitting && <ArrowRight aria-hidden="true" />}</button></div>
         </form>
       )}
     </main>

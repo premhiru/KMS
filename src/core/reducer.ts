@@ -1,6 +1,10 @@
 import type {
   AppState,
   CommunicationLog,
+  EvaluationAdvancement,
+  EvaluationAssignment,
+  EvaluationPlan,
+  EvaluationRound,
   EventConfig,
   Id,
   MessageTemplate,
@@ -25,6 +29,16 @@ export type AppAction =
   | { type: 'submission/decide'; id: Id; status: SubmissionStatus; at?: string }
   | { type: 'review/upsert'; review: Review; at?: string }
   | { type: 'review/delete'; id: Id; at?: string }
+  | { type: 'evaluation/plan/upsert'; plan: EvaluationPlan; at?: string }
+  | { type: 'evaluation/plan/delete'; id: Id; at?: string }
+  | { type: 'evaluation/round/upsert'; round: EvaluationRound; at?: string }
+  | { type: 'evaluation/round/delete'; id: Id; at?: string }
+  | { type: 'evaluation/assignment/upsert'; assignment: EvaluationAssignment; at?: string }
+  | { type: 'evaluation/assignment/delete'; id: Id; at?: string }
+  | { type: 'evaluation/assignment/start'; id: Id; at?: string }
+  | { type: 'evaluation/assignment/abstain'; id: Id; reason: string; at?: string }
+  | { type: 'evaluation/assignment/reopen'; id: Id; at?: string }
+  | { type: 'evaluation/advance'; advancement: EvaluationAdvancement; assignments: EvaluationAssignment[]; at?: string }
   | { type: 'task/upsert'; task: OnboardingTask; at?: string }
   | { type: 'task/toggle'; id: Id; completed: boolean; asset?: OnboardingTask['asset']; at?: string }
   | { type: 'session/upsert'; session: Session; at?: string }
@@ -53,6 +67,28 @@ function touch(state: AppState, at: string, patch: Partial<AppState>): AppState 
 function upsert<T extends { id: Id }>(items: T[], item: T): T[] {
   return items.some((existing) => existing.id === item.id)
     ? items.map((existing) => existing.id === item.id ? item : existing)
+    : [...items, item]
+}
+
+function upsertAssignment(items: EvaluationAssignment[], item: EvaluationAssignment): EvaluationAssignment[] {
+  const byId = items.find((candidate) => candidate.id === item.id)
+  if (byId) return items.map((candidate) => candidate.id === item.id ? item : candidate)
+  const existing = items.find((candidate) => (
+    candidate.roundId === item.roundId
+    && candidate.submissionId === item.submissionId
+    && candidate.reviewerEmail.toLowerCase() === item.reviewerEmail.toLowerCase()
+  ))
+  return existing
+    ? items.map((candidate) => candidate.id === existing.id ? {
+      ...item,
+      id: existing.id,
+      status: existing.status,
+      assignedAt: existing.assignedAt,
+      startedAt: existing.startedAt,
+      completedAt: existing.completedAt,
+      abstainedAt: existing.abstainedAt,
+      abstainReason: existing.abstainReason,
+    } : candidate)
     : [...items, item]
 }
 
@@ -101,6 +137,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return touch(state, at, {
         submissions: state.submissions.filter((submission) => submission.id !== action.id),
         reviews: state.reviews.filter((review) => review.submissionId !== action.id),
+        evaluationAssignments: (state.evaluationAssignments ?? []).filter((assignment) => assignment.submissionId !== action.id),
+        evaluationAdvancements: (state.evaluationAdvancements ?? []).filter((advancement) => advancement.submissionId !== action.id),
         sessions: state.sessions.filter((session) => session.submissionId !== action.id),
       })
     case 'submission/decide': {
@@ -114,15 +152,89 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         tasks: [...state.tasks, ...createdTasks],
       })
     }
-    case 'review/upsert':
+    case 'review/upsert': {
+      const assignmentId = action.review.assignmentId
       return touch(state, at, {
         reviews: upsert(state.reviews, { ...action.review, updatedAt: at }),
+        evaluationAssignments: (state.evaluationAssignments ?? []).map((assignment) => assignment.id === assignmentId ? {
+          ...assignment,
+          status: 'completed',
+          completedAt: at,
+          abstainedAt: undefined,
+          abstainReason: undefined,
+          updatedAt: at,
+        } : assignment),
         submissions: state.submissions.map((submission) => submission.id === action.review.submissionId && submission.status === 'needs-review'
           ? { ...submission, status: 'in-review', updatedAt: at }
           : submission),
       })
-    case 'review/delete':
-      return touch(state, at, { reviews: state.reviews.filter((review) => review.id !== action.id) })
+    }
+    case 'review/delete': {
+      const review = state.reviews.find((item) => item.id === action.id)
+      return touch(state, at, {
+        reviews: state.reviews.filter((item) => item.id !== action.id),
+        evaluationAssignments: (state.evaluationAssignments ?? []).map((assignment) => assignment.id === review?.assignmentId ? {
+          ...assignment,
+          status: 'in-progress',
+          completedAt: undefined,
+          updatedAt: at,
+        } : assignment),
+      })
+    }
+    case 'evaluation/plan/upsert':
+      return touch(state, at, { evaluationPlans: upsert(state.evaluationPlans ?? [], { ...action.plan, updatedAt: at }) })
+    case 'evaluation/plan/delete': {
+      const roundIds = new Set((state.evaluationRounds ?? []).filter((round) => round.planId === action.id).map((round) => round.id))
+      const assignmentIds = new Set((state.evaluationAssignments ?? []).filter((assignment) => roundIds.has(assignment.roundId)).map((assignment) => assignment.id))
+      return touch(state, at, {
+        evaluationPlans: (state.evaluationPlans ?? []).filter((plan) => plan.id !== action.id),
+        evaluationRounds: (state.evaluationRounds ?? []).filter((round) => !roundIds.has(round.id)),
+        evaluationAssignments: (state.evaluationAssignments ?? []).filter((assignment) => !roundIds.has(assignment.roundId)),
+        evaluationAdvancements: (state.evaluationAdvancements ?? []).filter((advancement) => advancement.planId !== action.id),
+        reviews: state.reviews.filter((review) => !roundIds.has(review.roundId ?? '') && !assignmentIds.has(review.assignmentId ?? '')),
+      })
+    }
+    case 'evaluation/round/upsert':
+      return touch(state, at, { evaluationRounds: upsert(state.evaluationRounds ?? [], { ...action.round, updatedAt: at }) })
+    case 'evaluation/round/delete': {
+      const assignmentIds = new Set((state.evaluationAssignments ?? []).filter((assignment) => assignment.roundId === action.id).map((assignment) => assignment.id))
+      return touch(state, at, {
+        evaluationRounds: (state.evaluationRounds ?? []).filter((round) => round.id !== action.id),
+        evaluationAssignments: (state.evaluationAssignments ?? []).filter((assignment) => assignment.roundId !== action.id),
+        evaluationAdvancements: (state.evaluationAdvancements ?? []).filter((advancement) => advancement.fromRoundId !== action.id && advancement.toRoundId !== action.id),
+        reviews: state.reviews.filter((review) => review.roundId !== action.id && !assignmentIds.has(review.assignmentId ?? '')),
+      })
+    }
+    case 'evaluation/assignment/upsert':
+      return touch(state, at, { evaluationAssignments: upsertAssignment(state.evaluationAssignments ?? [], { ...action.assignment, reviewerEmail: action.assignment.reviewerEmail.trim().toLowerCase(), updatedAt: at }) })
+    case 'evaluation/assignment/delete':
+      return touch(state, at, {
+        evaluationAssignments: (state.evaluationAssignments ?? []).filter((assignment) => assignment.id !== action.id),
+        reviews: state.reviews.filter((review) => review.assignmentId !== action.id),
+      })
+    case 'evaluation/assignment/start':
+      return touch(state, at, { evaluationAssignments: (state.evaluationAssignments ?? []).map((assignment) => assignment.id === action.id && assignment.status === 'assigned' ? { ...assignment, status: 'in-progress', startedAt: at, updatedAt: at } : assignment) })
+    case 'evaluation/assignment/abstain':
+      return touch(state, at, {
+        evaluationAssignments: (state.evaluationAssignments ?? []).map((assignment) => assignment.id === action.id ? { ...assignment, status: 'abstained', abstainedAt: at, abstainReason: action.reason.trim(), completedAt: undefined, updatedAt: at } : assignment),
+        reviews: state.reviews.filter((review) => review.assignmentId !== action.id),
+      })
+    case 'evaluation/assignment/reopen':
+      return touch(state, at, { evaluationAssignments: (state.evaluationAssignments ?? []).map((assignment) => assignment.id === action.id ? { ...assignment, status: 'in-progress', startedAt: assignment.startedAt ?? at, completedAt: undefined, abstainedAt: undefined, abstainReason: undefined, updatedAt: at } : assignment) })
+    case 'evaluation/advance': {
+      const existingAdvancement = (state.evaluationAdvancements ?? []).find((advancement) => advancement.planId === action.advancement.planId && advancement.submissionId === action.advancement.submissionId && advancement.fromRoundId === action.advancement.fromRoundId && advancement.toRoundId === action.advancement.toRoundId)
+      const advancements = existingAdvancement ? state.evaluationAdvancements ?? [] : [...(state.evaluationAdvancements ?? []), action.advancement]
+      const assignments = action.assignments.reduce((items, assignment) => {
+        const email = assignment.reviewerEmail.trim().toLowerCase()
+        const alreadyAssigned = items.some((item) => item.roundId === assignment.roundId && item.submissionId === assignment.submissionId && item.reviewerEmail.toLowerCase() === email)
+        return alreadyAssigned ? items : [...items, { ...assignment, reviewerEmail: email, updatedAt: at }]
+      }, state.evaluationAssignments ?? [])
+      return touch(state, at, {
+        evaluationAdvancements: advancements,
+        evaluationAssignments: assignments,
+        submissions: state.submissions.map((submission) => submission.id === action.advancement.submissionId && submission.status === 'needs-review' ? { ...submission, status: 'in-review', updatedAt: at } : submission),
+      })
+    }
     case 'task/upsert':
       return touch(state, at, { tasks: upsert(state.tasks, { ...action.task, updatedAt: at }) })
     case 'task/toggle':

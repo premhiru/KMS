@@ -4,7 +4,7 @@ import type { ResourcePage } from '../../domain/types'
 import './settings.css'
 
 export function EventSettings() {
-  const { state, dispatch, reset, importJson, exportJson } = useApp()
+  const { state, dispatch, reset, importJson, exportJson, persistenceMode, syncStatus } = useApp()
   const [message, setMessage] = useState('')
   const [draft, setDraft] = useState(() => ({ name: state.event.name, slug: state.event.slug, venue: state.event.venue, timezone: state.event.timezone, startAt: state.event.startAt.slice(0, 16), endAt: state.event.endAt.slice(0, 16), rooms: state.event.rooms.join(', '), tracks: state.event.tracks.join(', '), description: state.event.description ?? '' }))
   const importRef = useRef<HTMLInputElement>(null)
@@ -30,7 +30,7 @@ export function EventSettings() {
   }
 
   return <div className="feature-page settings-page">
-    <div className="feature-heading"><div><span className="eyebrow">EVENT CONFIGURATION</span><h1>Settings and data</h1><p>Configure the event and control its browser-local persisted dataset.</p></div><span className="integration-chip success">● Persistence active</span></div>
+    <div className="feature-heading"><div><span className="eyebrow">EVENT CONFIGURATION</span><h1>Settings and data</h1><p>Configure the event and control its {persistenceMode === 'remote' ? 'shared, revisioned workspace' : 'browser-local preview dataset'}.</p></div><span className={`integration-chip ${syncStatus === 'saved' ? 'success' : ''}`}>● {persistenceMode === 'remote' ? `Shared persistence ${syncStatus}` : 'Local preview persistence'}</span></div>
     {message && <div className="alert success" role="status">{message}</div>}
     <div className="settings-grid">
       <form className="card settings-form" onSubmit={save}><div className="card-heading"><div><h2>Event details</h2><p>Used across the CFP, portal, agenda, and public pages.</p></div></div>
@@ -46,7 +46,7 @@ export function EventSettings() {
       <div className="settings-side">
         <section className="card"><div className="card-heading"><div><h2>Data portability</h2><p>Export, restore, or reset the complete dataset.</p></div></div><div className="button-stack"><button className="button secondary" onClick={() => downloadJson('openspeaker-backup.json', JSON.parse(exportJson()))}>Export JSON backup</button><button className="button secondary" onClick={() => downloadCsv('openspeaker-submissions.csv', submissionsToCsv(state))}>Export submissions CSV</button><button className="button secondary" onClick={() => importRef.current?.click()}>Import JSON backup</button><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e) => void importFile(e.target.files?.[0])}/><button className="button danger" onClick={() => { if (window.confirm('Reset all saved data to the demo dataset?')) { reset(); setMessage('Demo data restored.') } }}>Reset demo data</button></div></section>
         <section className="card"><div className="card-heading"><div><h2>Public endpoints</h2><p>Shareable static-host-compatible routes.</p></div></div><label>Public event URL<input readOnly value={publicUrl}/></label><button className="button secondary" onClick={() => navigator.clipboard.writeText(publicUrl).then(() => setMessage('Public URL copied.'))}>Copy public URL</button></section>
-        <section className="card integration-list"><h2>Integration readiness</h2><div><b>Browser repository</b><span className="status status-accepted">active</span></div><div><b>Accelevents</b><span className="status status-waitlisted">CSV export</span></div><div><b>Email transport</b><span className="status status-in-review">in-app outbox</span></div><div><b>Calendar</b><span className="status status-accepted">ICS export</span></div></section>
+        <section className="card integration-list"><h2>Integration readiness</h2><div><b>Event repository</b><span className="status status-accepted">{persistenceMode === 'remote' ? 'D1 shared state' : 'local preview'}</span></div><div><b>Files</b><span className="status status-accepted">{persistenceMode === 'remote' ? 'private R2 storage' : 'metadata preview'}</span></div><div><b>Calendar</b><span className="status status-accepted">ICS export</span></div></section>
       </div>
     </div>
     <section className="card resource-editor"><div className="card-heading"><div><h2>Speaker resources and wiki</h2><p>Content appears in the participant portal. Embed URLs are allowlisted by the browser.</p></div></div>{(state.event.resources ?? []).map((resource, index) => <div className="resource-edit-row" key={resource.id}><input aria-label={`Resource ${index + 1} title`} value={resource.title} onChange={(e) => updateResource(index, { title: e.target.value })}/><textarea aria-label={`Resource ${index + 1} body`} rows={2} value={resource.body} onChange={(e) => updateResource(index, { body: e.target.value })}/><input aria-label={`Resource ${index + 1} embed URL`} placeholder="Optional https:// embed URL" value={resource.embedUrl ?? ''} onChange={(e) => updateResource(index, { embedUrl: e.target.value || undefined })}/></div>)}</section>

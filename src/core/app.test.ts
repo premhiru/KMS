@@ -44,6 +44,18 @@ describe('application lifecycle', () => {
     expect(findScheduleConflicts(withCollision).some((conflict) => conflict.kind === 'speaker-overlap')).toBe(true)
   })
 
+  it('detects parallel sessions assigned to the same track', () => {
+    const seed = createSeedState()
+    const extraSubmission = { ...seed.submissions[0], id: 'submission-agents-parallel', speakerIds: ['speaker-leo'] }
+    const candidate: Session = {
+      id: 'session-track-collision', submissionId: extraSubmission.id, room: 'Studio A',
+      startAt: '2026-09-16T17:00:00.000Z', endAt: '2026-09-16T17:30:00.000Z',
+      published: false, updatedAt: seed.lastUpdatedAt,
+    }
+    const state = { ...seed, submissions: [...seed.submissions, extraSubmission] }
+    expect(conflictsForSession(candidate, state).map((conflict) => conflict.kind)).toContain('track-overlap')
+  })
+
   it('round-trips valid state and rejects broken relationships', () => {
     const seed = createSeedState()
     const imported = importAppState(exportAppState(seed))

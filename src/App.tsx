@@ -10,6 +10,7 @@ import {
   MessageSquareText,
   PanelLeft,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -20,6 +21,7 @@ import './App.css'
 import './shell.css'
 import { useApp } from './core'
 import { AgendaBuilder } from './features/agenda'
+import { AdminWorkspace } from './features/admin'
 import { CommunicationsCenter } from './features/communications'
 import { Dashboard } from './features/dashboard/Dashboard'
 import { SpeakerPortal } from './features/portal'
@@ -68,14 +70,19 @@ const routeTitles: Record<AppRoute, string> = {
   portal: 'Speaker portal',
   event: 'Public event',
   settings: 'Settings',
+  admin: 'Access and audit',
 }
 
 export default function App() {
   const { route, navigate } = useHashRoute()
-  const { state } = useApp()
+  const { state, syncStatus, persistenceMode, persistenceError, session } = useApp()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [reviewSubmissionId, setReviewSubmissionId] = useState<string>()
+
+  if (syncStatus === 'loading') {
+    return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Opening OpenSpeaker</h1><p>Loading the shared event workspace…</p></main>
+  }
 
   if (route === 'cfp') {
     return <main className="public-surface"><PublicCfp /></main>
@@ -83,6 +90,19 @@ export default function App() {
 
   if (route === 'event') {
     return <main className="public-surface"><PublicEvent /></main>
+  }
+
+  if (syncStatus === 'unauthorized' || persistenceMode === 'public-readonly') {
+    const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+    return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Organizer sign-in required</h1><p>This workspace contains private speaker and review data.</p><a className="button primary" href={`/signin-with-chatgpt?return_to=${returnTo}`}>Sign in with ChatGPT</a></main>
+  }
+
+  if (session?.role === 'reviewer') {
+    return <main className="public-surface role-workspace">{syncStatus === 'error' && <div className="sync-banner error" role="alert">{persistenceError}</div>}<ReviewWorkspace currentReviewerEmail={session.user.email} reviewerName={session.user.name} defaultMode="reviewer" /></main>
+  }
+
+  if (session?.role === 'speaker') {
+    return <main className="public-surface role-workspace">{(syncStatus === 'saving' || syncStatus === 'error') && <div className={`sync-banner ${syncStatus}`} role="status">{syncStatus === 'saving' ? 'Saving your portal…' : persistenceError}</div>}<SpeakerPortal /></main>
   }
 
   function go(next: string) {
@@ -114,8 +134,9 @@ export default function App() {
         </div>)}
       </nav>
       <div className="sidebar-footer">
+        <button className={route === 'admin' ? 'active' : ''} onClick={() => go('admin')}><ShieldCheck size={18} /><span>Access & audit</span></button>
         <button className={route === 'settings' ? 'active' : ''} onClick={() => go('settings')}><Settings size={18} /><span>Settings & data</span></button>
-        <div className="organizer-profile"><span>SL</span><div><strong>Sarah Lin</strong><small>Event organizer</small></div></div>
+        <div className="organizer-profile"><span>{(session?.user.name || 'Event organizer').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span><div><strong>{session?.user.name || 'Event organizer'}</strong><small>{session?.role ?? 'Local preview'}</small></div></div>
       </div>
     </aside>
     <section className="shell-main">
@@ -131,6 +152,7 @@ export default function App() {
         </div>
       </header>
       <main className="shell-content">
+        {(syncStatus === 'saving' || syncStatus === 'error') && <div className={`sync-banner ${syncStatus}`} role="status">{syncStatus === 'saving' ? 'Saving to the shared workspace…' : persistenceError ?? 'Workspace sync needs attention.'}</div>}
         {route === 'dashboard' && <Dashboard onNavigate={go} />}
         {route === 'submissions' && <OrganizerSubmissions onOpenReview={(submissionId) => { setReviewSubmissionId(submissionId); go('reviews') }} />}
         {route === 'cfp-builder' && <CfpBuilder publicPath={`${window.location.origin}${window.location.pathname}#/cfp`} />}
@@ -140,6 +162,7 @@ export default function App() {
         {route === 'communications' && <CommunicationsCenter />}
         {route === 'portal' && <SpeakerPortal />}
         {route === 'settings' && <EventSettings />}
+        {route === 'admin' && <AdminWorkspace />}
       </main>
     </section>
   </div>

@@ -1,143 +1,221 @@
-import { useMemo, useState, type FormEvent } from 'react'
-import { BarChart3, Check, ClipboardCheck, Search, Star, Trash2 } from 'lucide-react'
-import { createId, nowIso, reviewAverage, selectSubmissionScore, selectSubmissionSpeakers, useApp } from '../../core'
-import type { Id, Review, ReviewCriterion, Submission, SubmissionStatus } from '../../domain'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { BarChart3, Check, ClipboardCheck, EyeOff, Search, Star } from 'lucide-react'
+import {
+  createId,
+  nowIso,
+  selectEvaluationRounds,
+  selectReviewerQueue,
+  selectRoundSubmissionScore,
+  weightedReviewAverage,
+  useApp,
+} from '../../core'
+import type { EvaluationAssignment, EvaluationRound, Id, Review, ReviewerQueueItem, SubmissionStatus } from '../../core'
+import { EvaluationPlanManager } from './EvaluationPlanManager'
 import './submissions.css'
 
-const criteria: Array<{ key: ReviewCriterion; label: string; description: string }> = [
-  { key: 'relevance', label: 'Relevance', description: 'Fit for the event audience and selected track' },
-  { key: 'originality', label: 'Originality', description: 'Fresh perspective, evidence, or practical insight' },
-  { key: 'clarity', label: 'Clarity', description: 'Focused premise and concrete attendee takeaways' },
-  { key: 'speaker-fit', label: 'Speaker fit', description: 'Credibility and experience to deliver this session' },
-]
-
-const roundNames = ['Round 1', 'Round 2', 'Final'] as const
+type DecisionStatus = Extract<SubmissionStatus, 'accepted' | 'waitlisted' | 'declined'>
 
 export interface ReviewWorkspaceProps {
   initialSubmissionId?: Id
+  currentReviewerEmail?: string
   reviewerName?: string
-  onDecision?: (submissionId: Id, status: Extract<SubmissionStatus, 'accepted' | 'waitlisted' | 'declined'>) => void
+  defaultMode?: 'reviewer' | 'organizer'
+  onDecision?: (submissionId: Id, status: DecisionStatus) => void
 }
 
-export function ReviewWorkspace({ initialSubmissionId, reviewerName = '', onDecision }: ReviewWorkspaceProps) {
-  const { state, dispatch } = useApp()
+export function ReviewWorkspace({
+  initialSubmissionId,
+  currentReviewerEmail,
+  reviewerName = '',
+  defaultMode = 'reviewer',
+  onDecision,
+}: ReviewWorkspaceProps) {
+  const { state, dispatch, session, submitAssignedReview } = useApp()
+  const reviewerEmails = useMemo(() => [...new Set((state.evaluationAssignments ?? []).map((item) => item.reviewerEmail.trim().toLowerCase()))], [state.evaluationAssignments])
+  const [mode, setMode] = useState(defaultMode)
+  const [demoEmail, setDemoEmail] = useState(reviewerEmails[0] ?? '')
+  const reviewerEmail = (currentReviewerEmail ?? demoEmail).trim().toLowerCase()
+  const rounds = selectEvaluationRounds(state)
+  const [roundId, setRoundId] = useState<Id | ''>('')
   const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<Id | undefined>(initialSubmissionId ?? state.submissions.find((item) => item.status === 'needs-review' || item.status === 'in-review')?.id ?? state.submissions[0]?.id)
-  const selected = state.submissions.find((submission) => submission.id === selectedId)
+  const queue = useMemo(() => selectReviewerQueue(state, reviewerEmail, roundId ? { roundId } : {}), [reviewerEmail, roundId, state])
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<Id | undefined>(() => {
+    if (!initialSubmissionId) return undefined
+    return (state.evaluationAssignments ?? []).find((item) => item.submissionId === initialSubmissionId)?.id
+  })
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return state.submissions.filter((submission) => {
-      const speakerNames = selectSubmissionSpeakers(state, submission.id).map((speaker) => `${speaker.firstName} ${speaker.lastName}`).join(' ')
-      return !needle || `${submission.title} ${submission.track} ${speakerNames}`.toLowerCase().includes(needle)
-    }).sort((left, right) => {
-      const priority = (status: SubmissionStatus) => status === 'needs-review' ? 0 : status === 'in-review' ? 1 : 2
-      return priority(left.status) - priority(right.status) || left.updatedAt.localeCompare(right.updatedAt)
-    })
-  }, [query, state])
+    return queue.filter((item) => !needle || `${item.submission.title} ${item.submission.track} ${item.round.name}`.toLowerCase().includes(needle))
+  }, [query, queue])
+  const selected = queue.find((item) => item.assignment.id === selectedAssignmentId) ?? rows[0]
 
-  function decide(status: Extract<SubmissionStatus, 'accepted' | 'waitlisted' | 'declined'>) {
-    if (!selected) return
-    dispatch({ type: 'submission/decide', id: selected.id, status, at: nowIso() })
-    onDecision?.(selected.id, status)
+  useEffect(() => {
+    if (!currentReviewerEmail && selected && selected.assignment.status === 'assigned') {
+      dispatch({ type: 'evaluation/assignment/start', id: selected.assignment.id, at: nowIso() })
+    }
+  }, [currentReviewerEmail, dispatch, selected])
+
+  function openReviewer(email: string, nextRoundId: Id, submissionId?: Id) {
+    setMode('reviewer')
+    setDemoEmail(email)
+    setRoundId(nextRoundId)
+    const assignment = (state.evaluationAssignments ?? []).find((item) => item.roundId === nextRoundId && item.reviewerEmail.toLowerCase() === email.toLowerCase() && (!submissionId || item.submissionId === submissionId))
+    setSelectedAssignmentId(assignment?.id)
+  }
+
+  function decide(submissionId: Id, status: DecisionStatus) {
+    dispatch({ type: 'submission/decide', id: submissionId, status, at: nowIso() })
+    onDecision?.(submissionId, status)
+  }
+
+  function saveReview(review: Review) {
+    if (session?.role === 'reviewer' && review.assignmentId) {
+      void submitAssignedReview({ assignmentId: review.assignmentId, submissionId: review.submissionId, review: { scores: review.scores, note: review.note }, assignmentStatus: 'completed' })
+      return
+    }
+    dispatch({ type: 'review/upsert', review, at: nowIso() })
+  }
+
+  function abstain(assignment: EvaluationAssignment, reason: string) {
+    if (session?.role === 'reviewer') {
+      const round = rounds.find((item) => item.id === assignment.roundId)
+      const scores = Object.fromEntries((round?.rubric ?? []).map((criterion) => [criterion.id, Math.ceil(criterion.maxScore / 2)]))
+      void submitAssignedReview({ assignmentId: assignment.id, submissionId: assignment.submissionId, review: { scores, note: `Abstained: ${reason}` }, assignmentStatus: 'abstained', abstain: true })
+      return
+    }
+    dispatch({ type: 'evaluation/assignment/abstain', id: assignment.id, reason, at: nowIso() })
+  }
+
+  function reopen(assignment: EvaluationAssignment) {
+    if (session?.role === 'reviewer') {
+      const round = rounds.find((item) => item.id === assignment.roundId)
+      const existing = state.reviews.find((review) => review.assignmentId === assignment.id)
+      const scores = existing?.scores ?? Object.fromEntries((round?.rubric ?? []).map((criterion) => [criterion.id, Math.ceil(criterion.maxScore / 2)]))
+      void submitAssignedReview({ assignmentId: assignment.id, submissionId: assignment.submissionId, review: { scores, note: existing?.note ?? '' }, assignmentStatus: 'assigned', abstain: false })
+      return
+    }
+    dispatch({ type: 'evaluation/assignment/reopen', id: assignment.id, at: nowIso() })
   }
 
   return (
     <section className="sb-feature" aria-labelledby="review-workspace-title">
       <header className="sb-feature__header">
-        <div><p className="sb-eyebrow">Program committee</p><h1 id="review-workspace-title">Review workspace</h1><p>Score proposals consistently across review rounds and record a final decision.</p></div>
+        <div><p className="sb-eyebrow">Program committee</p><h1 id="review-workspace-title">Evaluation workspace</h1><p>Configure weighted rounds, assign reviewers, and complete an identity-filtered review queue.</p></div>
         <div className="sb-stat"><ClipboardCheck aria-hidden="true" /><span><strong>{state.reviews.length}</strong> reviews</span></div>
       </header>
-
-      <div className="sb-review-layout">
-        <aside className="sb-review-queue" aria-label="Proposal review queue">
-          <label className="sb-search"><span className="sb-sr-only">Search review queue</span><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search review queue" /></label>
-          <div role="list">
-            {rows.map((submission) => {
-              const reviews = state.reviews.filter((review) => review.submissionId === submission.id)
-              const score = selectSubmissionScore(state, submission.id)
-              return <button type="button" role="listitem" key={submission.id} className={`sb-review-queue__item${submission.id === selectedId ? ' is-selected' : ''}`} onClick={() => setSelectedId(submission.id)} aria-current={submission.id === selectedId ? 'true' : undefined}><span><strong>{submission.title}</strong><small>{submission.track} · {reviews.length} review{reviews.length === 1 ? '' : 's'}</small></span><span className="sb-review-queue__score">{score === undefined ? '—' : score.toFixed(1)}</span></button>
-            })}
-          </div>
-        </aside>
-
-        <main className="sb-review-main">
-          {!selected && <div className="sb-empty"><ClipboardCheck aria-hidden="true" /><h2>Select a proposal to review</h2></div>}
-          {selected && <ReviewEditor key={selected.id} submission={selected} reviews={state.reviews.filter((review) => review.submissionId === selected.id)} reviewerName={reviewerName} speakers={selectSubmissionSpeakers(state, selected.id)} onSave={(review) => dispatch({ type: 'review/upsert', review, at: nowIso() })} onDelete={(id) => dispatch({ type: 'review/delete', id, at: nowIso() })} onDecide={decide} />}
-        </main>
+      <div className="sb-workspace-tabs" role="tablist" aria-label="Evaluation workspace view">
+        <button type="button" role="tab" aria-selected={mode === 'reviewer'} className={mode === 'reviewer' ? 'is-selected' : ''} onClick={() => setMode('reviewer')}>Reviewer queue</button>
+        {!currentReviewerEmail && <button type="button" role="tab" aria-selected={mode === 'organizer'} className={mode === 'organizer' ? 'is-selected' : ''} onClick={() => setMode('organizer')}>Plans and assignments</button>}
       </div>
+
+      {mode === 'organizer' && <EvaluationPlanManager onOpenReviewer={openReviewer} />}
+      {mode === 'reviewer' && (
+        <>
+          <div className="sb-reviewer-context">
+            {!currentReviewerEmail && <label>Preview reviewer<select value={demoEmail} onChange={(event) => { setDemoEmail(event.target.value); setSelectedAssignmentId(undefined) }}>{reviewerEmails.map((email) => <option key={email}>{email}</option>)}</select></label>}
+            {currentReviewerEmail && <p>Signed in as <strong>{reviewerEmail}</strong>. Only assignments for this email are shown.</p>}
+            <label>Round<select value={roundId} onChange={(event) => { setRoundId(event.target.value); setSelectedAssignmentId(undefined) }}><option value="">All assigned rounds</option>{rounds.map((round) => <option key={round.id} value={round.id}>{round.name} · {round.status}</option>)}</select></label>
+          </div>
+          <div className="sb-review-layout">
+            <aside className="sb-review-queue" aria-label="Assigned proposal review queue">
+              <label className="sb-search"><span className="sb-sr-only">Search assigned review queue</span><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search assigned queue" /></label>
+              <div role="list">
+                {rows.map((item) => {
+                  const score = selectRoundSubmissionScore(state, item.round.id, item.submission.id)
+                  return <button type="button" role="listitem" key={item.assignment.id} className={`sb-review-queue__item${item.assignment.id === selected?.assignment.id ? ' is-selected' : ''}`} onClick={() => setSelectedAssignmentId(item.assignment.id)} aria-current={item.assignment.id === selected?.assignment.id ? 'true' : undefined}><span><strong>{item.submission.title}</strong><small>{item.round.name} · {item.assignment.status}</small></span><span className="sb-review-queue__score">{score === undefined ? '—' : score.toFixed(1)}</span></button>
+                })}
+                {rows.length === 0 && <p className="sb-muted">No assignments match this reviewer and round.</p>}
+              </div>
+            </aside>
+            <main className="sb-review-main">
+              {!selected && <div className="sb-empty"><ClipboardCheck aria-hidden="true" /><h2>No assigned proposal selected</h2><p>Ask an organizer to assign your signed-in email to an open evaluation round.</p></div>}
+              {selected && <AssignmentReviewEditor key={selected.assignment.id} item={selected} reviews={state.reviews.filter((review) => review.submissionId === selected.submission.id && review.roundId === selected.round.id)} fallbackReviewerName={reviewerName} onSave={saveReview} onAbstain={abstain} onReopen={reopen} onDecide={currentReviewerEmail ? undefined : decide} />}
+            </main>
+          </div>
+        </>
+      )}
     </section>
   )
 }
 
-interface ReviewEditorProps {
-  submission: Submission
+interface AssignmentReviewEditorProps {
+  item: ReviewerQueueItem
   reviews: Review[]
-  reviewerName: string
-  speakers: ReturnType<typeof selectSubmissionSpeakers>
+  fallbackReviewerName: string
   onSave: (review: Review) => void
-  onDelete: (id: Id) => void
-  onDecide: (status: Extract<SubmissionStatus, 'accepted' | 'waitlisted' | 'declined'>) => void
+  onAbstain: (assignment: EvaluationAssignment, reason: string) => void
+  onReopen: (assignment: EvaluationAssignment) => void
+  onDecide?: (submissionId: Id, status: DecisionStatus) => void
 }
 
-function ReviewEditor({ submission, reviews, reviewerName: initialReviewerName, speakers, onSave, onDelete, onDecide }: ReviewEditorProps) {
-  const [name, setName] = useState(initialReviewerName)
-  const [round, setRound] = useState<(typeof roundNames)[number]>('Round 1')
-  const [scores, setScores] = useState<Record<ReviewCriterion, number>>({ relevance: 3, originality: 3, clarity: 3, 'speaker-fit': 3 })
-  const [note, setNote] = useState('')
+function initialScores(round: EvaluationRound, review?: Review): Record<string, number> {
+  return Object.fromEntries(round.rubric.map((criterion) => [criterion.id, review?.scores[criterion.id] ?? Math.ceil(criterion.maxScore / 2)]))
+}
+
+function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, onAbstain, onReopen, onDecide }: AssignmentReviewEditorProps) {
+  const existing = reviews.find((review) => review.assignmentId === item.assignment.id)
+  const [scores, setScores] = useState<Record<string, number>>(() => initialScores(item.round, existing))
+  const [note, setNote] = useState(existing?.note ?? '')
+  const [abstainReason, setAbstainReason] = useState(item.assignment.abstainReason ?? '')
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
-  const aggregate = reviews.length === 0 ? undefined : reviews.reduce((sum, review) => sum + reviewAverage(review.scores), 0) / reviews.length
+  const now = Date.now()
+  const reviewOpen = item.round.status === 'open' && Date.parse(item.round.dueAt) >= now && (!item.round.opensAt || Date.parse(item.round.opensAt) <= now)
+  const weightedScore = weightedReviewAverage(item.round, { scores })
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!name.trim()) {
-      setError('Enter the reviewer name before saving.')
-      return
-    }
-    const storedReviewerName = `${name.trim()} · ${round}`
-    const existing = reviews.find((review) => review.reviewerName === storedReviewerName)
-    onSave({ id: existing?.id ?? createId('review'), submissionId: submission.id, reviewerName: storedReviewerName, scores, note: note.trim(), updatedAt: nowIso() })
+    if (!reviewOpen) { setError('This round is not currently open for reviews.'); return }
+    onSave({ id: existing?.id ?? createId('review'), submissionId: item.submission.id, roundId: item.round.id, assignmentId: item.assignment.id, reviewerName: item.assignment.reviewerName || fallbackReviewerName || item.assignment.reviewerEmail, scores, note: note.trim(), updatedAt: nowIso() })
     setError('')
     setSaved(true)
-    window.setTimeout(() => setSaved(false), 1800)
+    window.setTimeout(() => setSaved(false), 1600)
   }
 
+  const roundAggregate = reviews.length === 0 ? undefined : reviews.reduce((sum, review) => sum + weightedReviewAverage(item.round, review), 0) / reviews.length
   return (
     <div>
       <header className="sb-review-title">
-        <div><span className={`sb-badge sb-badge--${submission.status}`}>{submission.status.replace('-', ' ')}</span><h2>{submission.title}</h2><p>{submission.format} · {submission.durationMinutes} min · {submission.track}</p></div>
-        <div className="sb-aggregate"><BarChart3 aria-hidden="true" /><span><strong>{aggregate === undefined ? '—' : aggregate.toFixed(2)}</strong><small>aggregate / 5</small></span></div>
+        <div><span className={`sb-badge sb-badge--${item.submission.status}`}>{item.submission.status.replace('-', ' ')}</span><h2>{item.submission.title}</h2><p>{item.submission.format} · {item.submission.durationMinutes} min · {item.submission.track}</p></div>
+        <div className="sb-aggregate"><BarChart3 aria-hidden="true" /><span><strong>{roundAggregate === undefined ? '—' : roundAggregate.toFixed(2)}</strong><small>{item.round.name} / 5</small></span></div>
       </header>
-      <div className="sb-review-speakers">{speakers.map((speaker) => <span key={speaker.id}><strong>{speaker.firstName} {speaker.lastName}</strong><small>{speaker.jobTitle}{speaker.company ? ` at ${speaker.company}` : ''}</small></span>)}</div>
-      <article className="sb-abstract"><p className="sb-eyebrow">Abstract</p>{submission.abstract.split('\n').map((paragraph, index) => <p key={`${paragraph}-${index}`}>{paragraph}</p>)}</article>
+      <div className="sb-round-meta"><span>{item.round.status}</span><span>Due {new Date(item.round.dueAt).toLocaleString()}</span><span>{item.assignment.status}</span></div>
+      {item.blind ? <div className="sb-blind-notice"><EyeOff aria-hidden="true" /><span><strong>Blind review</strong><small>Speaker identity is hidden for this round.</small></span></div> : <div className="sb-review-speakers">{item.speakers.map((speaker) => <span key={speaker.id}><strong>{speaker.firstName} {speaker.lastName}</strong><small>{speaker.jobTitle}{speaker.company ? ` at ${speaker.company}` : ''}</small></span>)}</div>}
+      <article className="sb-abstract"><p className="sb-eyebrow">Abstract</p>{item.submission.abstract.split('\n').map((paragraph, index) => <p key={`${paragraph}-${index}`}>{paragraph}</p>)}</article>
+      {item.round.instructions && <p className="sb-review-instructions"><strong>Reviewer instructions:</strong> {item.round.instructions}</p>}
 
-      <form className="sb-score-form" onSubmit={submit}>
-        <div className="sb-score-form__identity"><label>Reviewer name<input required aria-invalid={Boolean(error)} value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" /></label><label>Review round<select value={round} onChange={(event) => setRound(event.target.value as (typeof roundNames)[number])}>{roundNames.map((item) => <option key={item}>{item}</option>)}</select></label></div>
-        {error && <p className="sb-form-error" role="alert">{error}</p>}
-        <div className="sb-criteria">
-          {criteria.map((criterion) => (
-            <fieldset key={criterion.key}>
-              <legend><strong>{criterion.label}</strong><small>{criterion.description}</small></legend>
-              <div className="sb-rating">
-                {[1, 2, 3, 4, 5].map((value) => <label key={value} className={scores[criterion.key] === value ? 'is-selected' : ''}><input type="radio" name={criterion.key} value={value} checked={scores[criterion.key] === value} onChange={() => setScores((current) => ({ ...current, [criterion.key]: value }))} /><Star aria-hidden="true" /><span>{value}</span></label>)}
-              </div>
-            </fieldset>
-          ))}
-        </div>
-        <label className="sb-field">Private committee notes<textarea rows={5} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Strengths, risks, suggested changes, or evidence for your score" /></label>
-        <div className="sb-form__actions"><button className="sb-button sb-button--primary" type="submit">{saved ? <><Check aria-hidden="true" />Review saved</> : 'Save review'}</button><span className="sb-inline-score">Your score: <strong>{reviewAverage(scores).toFixed(2)}</strong> / 5</span></div>
-      </form>
+      {item.assignment.status === 'abstained' ? (
+        <section className="sb-abstain"><h3>You abstained from this assignment</h3><p>{item.assignment.abstainReason}</p><button className="sb-button" type="button" onClick={() => onReopen(item.assignment)}>Reopen assignment</button></section>
+      ) : (
+        <form className="sb-score-form" onSubmit={submit}>
+          {!reviewOpen && <p className="sb-form-error" role="alert">Reviews are disabled because this round is draft, closed, not yet open, or past due.</p>}
+          {error && <p className="sb-form-error" role="alert">{error}</p>}
+          <div className="sb-criteria">
+            {item.round.rubric.map((criterion) => (
+              <fieldset key={criterion.id}>
+                <legend><strong>{criterion.label} <small>({criterion.weight}% weight)</small></strong>{criterion.description && <small>{criterion.description}</small>}</legend>
+                <div className="sb-rating">
+                  {Array.from({ length: criterion.maxScore }, (_, index) => index + 1).map((value) => <label key={value} className={scores[criterion.id] === value ? 'is-selected' : ''}><input type="radio" name={`${item.assignment.id}-${criterion.id}`} value={value} checked={scores[criterion.id] === value} onChange={() => setScores((current) => ({ ...current, [criterion.id]: value }))} /><Star aria-hidden="true" /><span>{value}</span></label>)}
+                </div>
+              </fieldset>
+            ))}
+          </div>
+          <label className="sb-field">Private committee notes<textarea rows={5} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Strengths, risks, suggested changes, or evidence for your score" /></label>
+          <div className="sb-form__actions"><button className="sb-button sb-button--primary" type="submit" disabled={!reviewOpen}>{saved ? <><Check aria-hidden="true" />Review saved</> : existing ? 'Update review' : 'Submit review'}</button><span className="sb-inline-score">Weighted score: <strong>{weightedScore.toFixed(2)}</strong> / 5</span></div>
+          <div className="sb-abstain-controls"><label>Cannot review?<input value={abstainReason} onChange={(event) => setAbstainReason(event.target.value)} placeholder="Required reason, e.g. conflict of interest" /></label><button className="sb-button sb-button--danger" type="button" disabled={!abstainReason.trim()} onClick={() => onAbstain(item.assignment, abstainReason.trim())}>Abstain</button></div>
+        </form>
+      )}
 
-      <section className="sb-round-history" aria-labelledby={`history-${submission.id}`}>
-        <div className="sb-card__header"><div><p className="sb-eyebrow">Round history</p><h3 id={`history-${submission.id}`}>Committee reviews</h3></div></div>
-        {reviews.length === 0 && <p className="sb-muted">No reviews saved yet.</p>}
-        {reviews.map((review) => <article key={review.id}><div><strong>{review.reviewerName}</strong><span>{reviewAverage(review.scores).toFixed(2)} / 5</span><button type="button" className="sb-icon-button sb-icon-button--danger" aria-label={`Delete review by ${review.reviewerName}`} onClick={() => onDelete(review.id)}><Trash2 aria-hidden="true" /></button></div><dl>{criteria.map((criterion) => <div key={criterion.key}><dt>{criterion.label}</dt><dd>{review.scores[criterion.key]}</dd></div>)}</dl>{review.note && <p>{review.note}</p>}</article>)}
+      <section className="sb-round-history" aria-labelledby={`history-${item.assignment.id}`}>
+        <div className="sb-card__header"><div><p className="sb-eyebrow">Round history</p><h3 id={`history-${item.assignment.id}`}>{item.round.name} reviews</h3></div></div>
+        {reviews.length === 0 && <p className="sb-muted">No completed reviews in this round.</p>}
+        {reviews.map((review) => <article key={review.id}><div><strong>{review.reviewerName}</strong><span>{weightedReviewAverage(item.round, review).toFixed(2)} / 5</span></div><dl>{item.round.rubric.map((criterion) => <div key={criterion.id}><dt>{criterion.label}</dt><dd>{review.scores[criterion.id] ?? '—'}</dd></div>)}</dl>{review.note && <p>{review.note}</p>}</article>)}
       </section>
 
-      <section className="sb-decision sb-decision--review" aria-labelledby={`final-decision-${submission.id}`}>
-        <div><p className="sb-eyebrow">Final decision</p><h3 id={`final-decision-${submission.id}`}>Record committee outcome</h3><p>Accepting automatically creates onboarding tasks for every attached speaker.</p></div>
-        <div className="sb-decision__buttons"><button className="sb-button sb-button--success" type="button" onClick={() => onDecide('accepted')}>Accept</button><button className="sb-button sb-button--warning" type="button" onClick={() => onDecide('waitlisted')}>Waitlist</button><button className="sb-button sb-button--danger" type="button" onClick={() => onDecide('declined')}>Decline</button></div>
-      </section>
+      {onDecide && <section className="sb-decision sb-decision--review" aria-labelledby={`final-decision-${item.submission.id}`}>
+        <div><p className="sb-eyebrow">Committee outcome</p><h3 id={`final-decision-${item.submission.id}`}>Record final decision</h3><p>Accepting creates speaker onboarding tasks idempotently.</p></div>
+        <div className="sb-decision__buttons"><button className="sb-button sb-button--success" type="button" onClick={() => onDecide(item.submission.id, 'accepted')}>Accept</button><button className="sb-button sb-button--warning" type="button" onClick={() => onDecide(item.submission.id, 'waitlisted')}>Waitlist</button><button className="sb-button sb-button--danger" type="button" onClick={() => onDecide(item.submission.id, 'declined')}>Decline</button></div>
+      </section>}
     </div>
   )
 }
