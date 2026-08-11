@@ -59,7 +59,7 @@ function AcceptanceCard({ speaker, announce }: { speaker: Speaker; announce: (me
 }
 
 function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (message: string) => void }) {
-  const state = useAppState()
+  const { state, session } = useApp()
   const dispatch = useAppDispatch()
   const [form, setForm] = useState({
     firstName: speaker.firstName,
@@ -99,7 +99,7 @@ function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (messa
       <div className="portal-form-grid">
         <label>First name<input required value={form.firstName} onChange={(event) => setForm({ ...form, firstName: event.target.value })} /></label>
         <label>Last name<input required value={form.lastName} onChange={(event) => setForm({ ...form, lastName: event.target.value })} /></label>
-        <label>Email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
+        <label>Email<input required readOnly={session?.role === 'speaker'} type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />{session?.role === 'speaker' && <small>Managed by your verified sign-in identity.</small>}</label>
         <label>Company<input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></label>
         <label>Job title<input value={form.jobTitle} onChange={(event) => setForm({ ...form, jobTitle: event.target.value })} /></label>
         <label>Pronouns<input value={form.pronouns} onChange={(event) => setForm({ ...form, pronouns: event.target.value })} /></label>

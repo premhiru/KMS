@@ -92,7 +92,7 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
         try {
           identity = await api.getSession({ signal: controller.signal })
         } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 403 || !window.location.hash.startsWith('#/portal')) throw error
+          if (!(error instanceof ApiError) || error.status !== 403) throw error
         }
 
         if (identity?.role === 'owner' || identity?.role === 'organizer') {
