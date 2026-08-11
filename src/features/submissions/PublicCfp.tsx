@@ -201,7 +201,7 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
           <p className="sb-eyebrow">Proposal received</p>
           <h1>Thank you, {speaker.firstName}.</h1>
           <p>{cfp?.thankYouMessage ?? 'Thanks for submitting. We will be in touch after committee review.'}</p>
-          <dl><div><dt>Proposal</dt><dd>{submitted.title}</dd></div><div><dt>Confirmation sent to</dt><dd>{submitted.email}</dd></div><div><dt>Reference</dt><dd>{submitted.id}</dd></div></dl>
+          <dl><div><dt>Proposal</dt><dd>{submitted.title}</dd></div><div><dt>Contact email</dt><dd>{submitted.email}</dd></div><div><dt>Reference</dt><dd>{submitted.id}</dd></div></dl>
           {cfp?.allowMultiple && <button className="sb-button sb-button--primary" type="button" onClick={startAnother}>Submit another proposal <ArrowRight aria-hidden="true" /></button>}
         </div>
       </main>

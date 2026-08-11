@@ -97,6 +97,9 @@ export interface Submission {
   tags: string[]
   createdAt: ISODateTime
   updatedAt: ISODateTime
+  sourceSubmissionId?: Id
+  source?: string
+  customAnswers?: Record<string, unknown>
 }
 
 export interface Review {
@@ -232,6 +235,7 @@ export interface AppState {
   sessions: Session[]
   templates: MessageTemplate[]
   communicationLog: CommunicationLog[]
+  deletedSourceSubmissionIds?: Id[]
 }
 
 export interface SubmissionInput {

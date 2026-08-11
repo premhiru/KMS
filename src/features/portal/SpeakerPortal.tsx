@@ -114,7 +114,7 @@ function UploadControl({ task, announce }: { task: OnboardingTask; announce: (me
   const { dispatch, persistenceMode, uploadAsset, downloadAsset } = useApp()
   const [uploading, setUploading] = useState(false)
   const isHeadshot = task.kind === 'headshot'
-  const accept = isHeadshot ? 'image/jpeg,image/png,image/webp' : '.pdf,.ppt,.pptx,.key,application/pdf'
+  const accept = isHeadshot ? 'image/jpeg,image/png,image/webp' : '.pdf,.ppt,.pptx,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation'
   const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return

@@ -133,14 +133,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return touch(state, at, { submissions: upsert(state.submissions, action.submission) })
     case 'submission/update':
       return touch(state, at, { submissions: state.submissions.map((submission) => submission.id === action.id ? { ...submission, ...action.patch, updatedAt: at } : submission) })
-    case 'submission/delete':
+    case 'submission/delete': {
+      const deleted = state.submissions.find((submission) => submission.id === action.id)
       return touch(state, at, {
         submissions: state.submissions.filter((submission) => submission.id !== action.id),
         reviews: state.reviews.filter((review) => review.submissionId !== action.id),
         evaluationAssignments: (state.evaluationAssignments ?? []).filter((assignment) => assignment.submissionId !== action.id),
         evaluationAdvancements: (state.evaluationAdvancements ?? []).filter((advancement) => advancement.submissionId !== action.id),
         sessions: state.sessions.filter((session) => session.submissionId !== action.id),
+        deletedSourceSubmissionIds: deleted?.sourceSubmissionId ? [...new Set([...(state.deletedSourceSubmissionIds ?? []), deleted.sourceSubmissionId])] : state.deletedSourceSubmissionIds,
       })
+    }
     case 'submission/decide': {
       const submission = state.submissions.find((item) => item.id === action.id)
       if (!submission) return state

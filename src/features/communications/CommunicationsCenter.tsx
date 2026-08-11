@@ -94,7 +94,10 @@ export function CommunicationsCenter() {
       })
       const receipt = await api.sendEmail({ idempotencyKey: `email-${crypto.randomUUID()}`, messages })
       const at = nowIso()
-      for (const message of messages) dispatch({ type: 'communication/log', entry: { id: createId('message'), templateId: selectedTemplate.id, recipientSpeakerIds: [message.speakerId], subject: message.subject, body: message.text, channel: 'email', status: receipt.status === 'failed' ? 'failed' : 'sent', sentAt: at }, at })
+      for (const message of messages) {
+        const delivery = receipt.result.deliveries?.find((item) => item.speakerId === message.speakerId)
+        dispatch({ type: 'communication/log', entry: { id: createId('message'), templateId: selectedTemplate.id, recipientSpeakerIds: [message.speakerId], subject: message.subject, body: message.text, channel: 'email', status: delivery?.status === 'failed' || receipt.status === 'failed' ? 'failed' : 'sent', sentAt: at }, at })
+      }
       setNotice(`${receipt.result.sent ?? messages.length} email${messages.length === 1 ? '' : 's'} sent with calendar attachment. Run ${receipt.runId}.`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Email delivery failed.')

@@ -68,30 +68,30 @@ export function ReviewWorkspace({
     onDecision?.(submissionId, status)
   }
 
-  function saveReview(review: Review) {
+  async function saveReview(review: Review) {
     if (session?.role === 'reviewer' && review.assignmentId) {
-      void submitAssignedReview({ assignmentId: review.assignmentId, submissionId: review.submissionId, review: { scores: review.scores, note: review.note }, assignmentStatus: 'completed' })
+      await submitAssignedReview({ assignmentId: review.assignmentId, submissionId: review.submissionId, review: { scores: review.scores, note: review.note }, assignmentStatus: 'completed' })
       return
     }
     dispatch({ type: 'review/upsert', review, at: nowIso() })
   }
 
-  function abstain(assignment: EvaluationAssignment, reason: string) {
+  async function abstain(assignment: EvaluationAssignment, reason: string) {
     if (session?.role === 'reviewer') {
       const round = rounds.find((item) => item.id === assignment.roundId)
       const scores = Object.fromEntries((round?.rubric ?? []).map((criterion) => [criterion.id, Math.ceil(criterion.maxScore / 2)]))
-      void submitAssignedReview({ assignmentId: assignment.id, submissionId: assignment.submissionId, review: { scores, note: `Abstained: ${reason}` }, assignmentStatus: 'abstained', abstain: true })
+      await submitAssignedReview({ assignmentId: assignment.id, submissionId: assignment.submissionId, review: { scores, note: `Abstained: ${reason}` }, assignmentStatus: 'abstained', abstain: true })
       return
     }
     dispatch({ type: 'evaluation/assignment/abstain', id: assignment.id, reason, at: nowIso() })
   }
 
-  function reopen(assignment: EvaluationAssignment) {
+  async function reopen(assignment: EvaluationAssignment) {
     if (session?.role === 'reviewer') {
       const round = rounds.find((item) => item.id === assignment.roundId)
       const existing = state.reviews.find((review) => review.assignmentId === assignment.id)
       const scores = existing?.scores ?? Object.fromEntries((round?.rubric ?? []).map((criterion) => [criterion.id, Math.ceil(criterion.maxScore / 2)]))
-      void submitAssignedReview({ assignmentId: assignment.id, submissionId: assignment.submissionId, review: { scores, note: existing?.note ?? '' }, assignmentStatus: 'assigned', abstain: false })
+      await submitAssignedReview({ assignmentId: assignment.id, submissionId: assignment.submissionId, review: { scores, note: existing?.note ?? '' }, assignmentStatus: 'assigned', abstain: false })
       return
     }
     dispatch({ type: 'evaluation/assignment/reopen', id: assignment.id, at: nowIso() })
@@ -142,9 +142,9 @@ interface AssignmentReviewEditorProps {
   item: ReviewerQueueItem
   reviews: Review[]
   fallbackReviewerName: string
-  onSave: (review: Review) => void
-  onAbstain: (assignment: EvaluationAssignment, reason: string) => void
-  onReopen: (assignment: EvaluationAssignment) => void
+  onSave: (review: Review) => Promise<void> | void
+  onAbstain: (assignment: EvaluationAssignment, reason: string) => Promise<void> | void
+  onReopen: (assignment: EvaluationAssignment) => Promise<void> | void
   onDecide?: (submissionId: Id, status: DecisionStatus) => void
 }
 
@@ -163,13 +163,35 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
   const reviewOpen = item.round.status === 'open' && Date.parse(item.round.dueAt) >= now && (!item.round.opensAt || Date.parse(item.round.opensAt) <= now)
   const weightedScore = weightedReviewAverage(item.round, { scores })
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!reviewOpen) { setError('This round is not currently open for reviews.'); return }
-    onSave({ id: existing?.id ?? createId('review'), submissionId: item.submission.id, roundId: item.round.id, assignmentId: item.assignment.id, reviewerName: item.assignment.reviewerName || fallbackReviewerName || item.assignment.reviewerEmail, scores, note: note.trim(), updatedAt: nowIso() })
-    setError('')
-    setSaved(true)
-    window.setTimeout(() => setSaved(false), 1600)
+    try {
+      await onSave({ id: existing?.id ?? createId('review'), submissionId: item.submission.id, roundId: item.round.id, assignmentId: item.assignment.id, reviewerName: item.assignment.reviewerName || fallbackReviewerName || item.assignment.reviewerEmail, scores, note: note.trim(), updatedAt: nowIso() })
+      setError('')
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1600)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'The review could not be saved.')
+    }
+  }
+
+  async function abstain() {
+    try {
+      await onAbstain(item.assignment, abstainReason.trim())
+      setError('')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'The abstention could not be saved.')
+    }
+  }
+
+  async function reopen() {
+    try {
+      await onReopen(item.assignment)
+      setError('')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'The assignment could not be reopened.')
+    }
   }
 
   const roundAggregate = reviews.length === 0 ? undefined : reviews.reduce((sum, review) => sum + weightedReviewAverage(item.round, review), 0) / reviews.length
@@ -185,7 +207,7 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
       {item.round.instructions && <p className="sb-review-instructions"><strong>Reviewer instructions:</strong> {item.round.instructions}</p>}
 
       {item.assignment.status === 'abstained' ? (
-        <section className="sb-abstain"><h3>You abstained from this assignment</h3><p>{item.assignment.abstainReason}</p><button className="sb-button" type="button" onClick={() => onReopen(item.assignment)}>Reopen assignment</button></section>
+        <section className="sb-abstain"><h3>You abstained from this assignment</h3><p>{item.assignment.abstainReason}</p>{error && <p className="sb-form-error" role="alert">{error}</p>}<button className="sb-button" type="button" onClick={() => void reopen()}>Reopen assignment</button></section>
       ) : (
         <form className="sb-score-form" onSubmit={submit}>
           {!reviewOpen && <p className="sb-form-error" role="alert">Reviews are disabled because this round is draft, closed, not yet open, or past due.</p>}
@@ -202,7 +224,7 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
           </div>
           <label className="sb-field">Private committee notes<textarea rows={5} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Strengths, risks, suggested changes, or evidence for your score" /></label>
           <div className="sb-form__actions"><button className="sb-button sb-button--primary" type="submit" disabled={!reviewOpen}>{saved ? <><Check aria-hidden="true" />Review saved</> : existing ? 'Update review' : 'Submit review'}</button><span className="sb-inline-score">Weighted score: <strong>{weightedScore.toFixed(2)}</strong> / 5</span></div>
-          <div className="sb-abstain-controls"><label>Cannot review?<input value={abstainReason} onChange={(event) => setAbstainReason(event.target.value)} placeholder="Required reason, e.g. conflict of interest" /></label><button className="sb-button sb-button--danger" type="button" disabled={!abstainReason.trim()} onClick={() => onAbstain(item.assignment, abstainReason.trim())}>Abstain</button></div>
+          <div className="sb-abstain-controls"><label>Cannot review?<input value={abstainReason} onChange={(event) => setAbstainReason(event.target.value)} placeholder="Required reason, e.g. conflict of interest" /></label><button className="sb-button sb-button--danger" type="button" disabled={!abstainReason.trim()} onClick={() => void abstain()}>Abstain</button></div>
         </form>
       )}
 

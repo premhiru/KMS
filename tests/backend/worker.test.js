@@ -81,7 +81,7 @@ describe('trusted forwarded identity', () => {
 describe('public state projection', () => {
   it('includes only published accepted sessions and removes private operational data', () => {
     const state = {
-      schemaVersion: 1, lastUpdatedAt: '2026-01-01T00:00:00Z', event: { id: 'event-1' },
+      schemaVersion: 1, lastUpdatedAt: '2026-01-01T00:00:00Z', event: { id: 'event-1', cfp: { private: true }, resources: [{ private: true }] },
       speakers: [{ id: 'speaker-1', firstName: 'Maya', lastName: 'Chen', email: 'private@example.com', status: 'confirmed', bio: 'Bio' }, { id: 'speaker-2', firstName: 'Not', lastName: 'Published', status: 'confirmed' }],
       submissions: [{ id: 'accepted', status: 'accepted', speakerIds: ['speaker-1'] }, { id: 'declined', status: 'declined', speakerIds: ['speaker-2'] }],
       sessions: [{ id: 'session-1', submissionId: 'accepted', published: true }, { id: 'session-2', submissionId: 'declined', published: true }],
@@ -91,6 +91,8 @@ describe('public state projection', () => {
     expect(result.sessions).toHaveLength(1)
     expect(result.submissions).toHaveLength(1)
     expect(result.speakers).toEqual([expect.objectContaining({ id: 'speaker-1', email: '', availability: [] })])
+    expect(result.event).not.toHaveProperty('cfp')
+    expect(result.event).not.toHaveProperty('resources')
     expect(result.reviews).toEqual([])
     expect(result.communicationLog).toEqual([])
   })
@@ -105,13 +107,16 @@ describe('public state projection', () => {
     expect(second.state.submissions).toHaveLength(1)
     expect(second.state.speakers).toHaveLength(2)
     expect(second.state.submissions[0]).toMatchObject({ sourceSubmissionId: 'source-1', customAnswers: { level: 'advanced' } })
+    const tombstoned = mergePublicSubmissionsIntoState({ ...state, deletedSourceSubmissionIds: ['source-1'] }, rows)
+    expect(tombstoned.importedCount).toBe(0)
+    expect(tombstoned.state.submissions).toEqual([])
   })
 })
 
 describe('public CFP to organizer state lifecycle', () => {
   it('seeds state, accepts an anonymous submission, and returns it exactly once on repeated authenticated reads', async () => {
     const DB = new D1Mock()
-    const env = { DB, CFP_RATE_LIMIT: '20' }
+    const env = { DB, CFP_RATE_LIMIT: '20', ALLOW_LOCAL_AUTH: 'true' }
     const authHeaders = {
       'content-type': 'application/json',
       'oai-authenticated-user-id': 'user-owner',
@@ -163,7 +168,7 @@ describe('public CFP to organizer state lifecycle', () => {
 describe('speaker, reviewer, and integration boundaries', () => {
   it('claims a matched speaker, isolates blind reviewers, and sends an idempotent ICS email', async () => {
     const DB = new D1Mock()
-    const env = { DB, RESEND_API_KEY: 'resend-test', EMAIL_FROM: 'Summit <events@example.com>' }
+    const env = { DB, RESEND_API_KEY: 'resend-test', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true' }
     const ownerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-1', 'oai-authenticated-user-email': 'owner@example.com' }
     const eventEndpoint = 'https://app.test/api/workspaces/workspace-secure/events/event-secure/state'
     const state = {
@@ -179,7 +184,7 @@ describe('speaker, reviewer, and integration boundaries', () => {
       ],
       tasks: [{ id: 'task-own', speakerId: 'speaker-own', kind: 'profile', title: 'Profile', dueAt: '2026-01-01', updatedAt: 'now' }, { id: 'task-other', speakerId: 'speaker-other', kind: 'profile', title: 'Other', dueAt: '2026-01-01', updatedAt: 'now' }],
       sessions: [], reviews: [], templates: [], communicationLog: [],
-      evaluationRounds: [{ id: 'round-blind', name: 'Blind round', blind: true }],
+      evaluationRounds: [{ id: 'round-blind', name: 'Blind round', status: 'open', opensAt: '2020-01-01T00:00:00Z', dueAt: '2099-01-01T00:00:00Z', blind: true, rubric: [{ id: 'relevance', maxScore: 5 }] }],
       evaluationAssignments: [
         { id: 'assignment-own', submissionId: 'submission-own', reviewerEmail: 'reviewer@example.com', status: 'assigned', roundId: 'round-blind' },
         { id: 'assignment-other', submissionId: 'submission-other', reviewerEmail: 'other-reviewer@example.com', status: 'assigned', blind: false },
@@ -217,13 +222,27 @@ describe('speaker, reviewer, and integration boundaries', () => {
     expect(queue.data.submissions.map((submission) => submission.id)).toEqual(['submission-own'])
     expect(queue.data.submissions[0].speakerIds).toEqual([])
     expect(queue.data.speakers).toEqual([])
+    expect(queue.data.rounds[0].opensAt).toBe('2020-01-01T00:00:00Z')
     const fullStateDenied = await fetchHandler(new Request(eventEndpoint, { headers: reviewerHeaders }), env)
     expect(fullStateDenied.status).toBe(403)
+    const submissionsDenied = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-secure/events/event-secure/submissions', { headers: reviewerHeaders }), env)
+    expect(submissionsDenied.status).toBe(403)
     const reviewEndpoint = 'https://app.test/api/workspaces/workspace-secure/events/event-secure/reviews'
     const crossReview = await fetchHandler(new Request(reviewEndpoint, { method: 'POST', headers: reviewerHeaders, body: JSON.stringify({ expectedRevision: 2, assignmentId: 'assignment-other', submissionId: 'submission-other', review: { scores: { relevance: 5 } } }) }), env)
     expect(crossReview.status).toBe(403)
     const ownReview = await fetchHandler(new Request(reviewEndpoint, { method: 'POST', headers: reviewerHeaders, body: JSON.stringify({ expectedRevision: 2, assignmentId: 'assignment-own', submissionId: 'submission-own', review: { scores: { relevance: 5 }, note: 'Strong' }, assignmentStatus: 'completed' }) }), env)
     expect(ownReview.status).toBe(200)
+    const abstainedReview = await fetchHandler(new Request(reviewEndpoint, { method: 'POST', headers: reviewerHeaders, body: JSON.stringify({ expectedRevision: 3, assignmentId: 'assignment-own', submissionId: 'submission-own', review: { scores: { relevance: 5 }, note: 'Conflict' }, assignmentStatus: 'abstained', abstain: true }) }), env)
+    expect(abstainedReview.status).toBe(200)
+    const ownerRead = await fetchHandler(new Request(eventEndpoint, { headers: ownerHeaders }), env)
+    const ownerPayload = await ownerRead.json()
+    expect(ownerPayload.data.state.reviews).toEqual([])
+    const closedState = { ...ownerPayload.data.state, evaluationRounds: ownerPayload.data.state.evaluationRounds.map((round) => ({ ...round, status: 'closed' })) }
+    const closeRound = await fetchHandler(new Request(eventEndpoint, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: ownerPayload.data.revision, event: { name: 'Secure Summit', slug: 'secure', cfpOpen: false, cfpConfig: {} }, state: closedState }) }), env)
+    expect(closeRound.status).toBe(200)
+    const closedRoundReview = await fetchHandler(new Request(reviewEndpoint, { method: 'POST', headers: reviewerHeaders, body: JSON.stringify({ expectedRevision: ownerPayload.data.revision + 1, assignmentId: 'assignment-own', submissionId: 'submission-own', review: { scores: { relevance: 5 }, note: 'Too late' }, assignmentStatus: 'completed' }) }), env)
+    expect(closedRoundReview.status).toBe(409)
+    expect((await closedRoundReview.json()).error.code).toBe('REVIEW_ROUND_CLOSED')
 
     const providerFetch = vi.fn(async (_url, options) => {
       const payload = JSON.parse(options.body)
@@ -244,6 +263,22 @@ describe('speaker, reviewer, and integration boundaries', () => {
 })
 
 describe('D1 initialization', () => {
+  it('does not let an arbitrary first authenticated caller claim an uninitialized workspace', async () => {
+    const DB = new D1Mock()
+    const response = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-uninitialized/events/event-1/state', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        'oai-authenticated-user-id': 'attacker-1',
+        'oai-authenticated-user-email': 'attacker@example.com',
+      },
+      body: JSON.stringify({ expectedRevision: 0, event: { name: 'Claimed', slug: 'claimed', cfpOpen: false }, state: { schemaVersion: 1, event: {}, speakers: [], submissions: [] } }),
+    }), { DB })
+    expect(response.status).toBe(403)
+    expect((await response.json()).error.code).toBe('WORKSPACE_NOT_INITIALIZED')
+    DB.database.close()
+  })
+
   it('keeps each prepared migration as a single SQL statement', () => {
     expect(SCHEMA_STATEMENTS.length).toBeGreaterThan(8)
     for (const statement of SCHEMA_STATEMENTS) {

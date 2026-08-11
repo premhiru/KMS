@@ -3,16 +3,33 @@ import { downloadCsv, downloadJson, submissionsToCsv, useApp } from '../../core'
 import type { ResourcePage } from '../../domain/types'
 import './settings.css'
 
+function dateTimeInput(value: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value))
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`
+}
+
+function zonedDateTime(value: string, timeZone: string): string {
+  const [date, time] = value.split('T')
+  const [year, month, day] = date.split('-').map(Number)
+  const [hour, minute] = time.split(':').map(Number)
+  const desired = Date.UTC(year, month - 1, day, hour, minute)
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(desired))
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value ?? 0)
+  const rendered = Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second'))
+  return new Date(desired - (rendered - desired)).toISOString()
+}
+
 export function EventSettings() {
   const { state, dispatch, reset, importJson, exportJson, persistenceMode, syncStatus } = useApp()
   const [message, setMessage] = useState('')
-  const [draft, setDraft] = useState(() => ({ name: state.event.name, slug: state.event.slug, venue: state.event.venue, timezone: state.event.timezone, startAt: state.event.startAt.slice(0, 16), endAt: state.event.endAt.slice(0, 16), rooms: state.event.rooms.join(', '), tracks: state.event.tracks.join(', '), description: state.event.description ?? '' }))
+  const [draft, setDraft] = useState(() => ({ name: state.event.name, slug: state.event.slug, venue: state.event.venue, timezone: state.event.timezone, startAt: dateTimeInput(state.event.startAt, state.event.timezone), endAt: dateTimeInput(state.event.endAt, state.event.timezone), rooms: state.event.rooms.join(', '), tracks: state.event.tracks.join(', '), description: state.event.description ?? '' }))
   const importRef = useRef<HTMLInputElement>(null)
   const publicUrl = useMemo(() => `${window.location.origin}${window.location.pathname}#/event`, [])
 
   function save(event: FormEvent) {
     event.preventDefault()
-    dispatch({ type: 'event/update', patch: { ...draft, startAt: new Date(draft.startAt).toISOString(), endAt: new Date(draft.endAt).toISOString(), rooms: draft.rooms.split(',').map((item) => item.trim()).filter(Boolean), tracks: draft.tracks.split(',').map((item) => item.trim()).filter(Boolean) }, at: new Date().toISOString() })
+    dispatch({ type: 'event/update', patch: { ...draft, startAt: zonedDateTime(draft.startAt, draft.timezone), endAt: zonedDateTime(draft.endAt, draft.timezone), rooms: draft.rooms.split(',').map((item) => item.trim()).filter(Boolean), tracks: draft.tracks.split(',').map((item) => item.trim()).filter(Boolean) }, at: new Date().toISOString() })
     setMessage('Event configuration saved.')
   }
 
@@ -35,7 +52,7 @@ export function EventSettings() {
     <div className="settings-grid">
       <form className="card settings-form" onSubmit={save}><div className="card-heading"><div><h2>Event details</h2><p>Used across the CFP, portal, agenda, and public pages.</p></div></div>
         <label>Event name<input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label>
-        <div className="form-grid"><label>Public slug<input required value={draft.slug} onChange={(e) => setDraft({ ...draft, slug: e.target.value })}/></label><label>Venue<input required value={draft.venue} onChange={(e) => setDraft({ ...draft, venue: e.target.value })}/></label></div>
+        <div className="form-grid"><label>Public slug<input required readOnly={persistenceMode === 'remote'} value={draft.slug} onChange={(e) => setDraft({ ...draft, slug: e.target.value })}/>{persistenceMode === 'remote' && <small>Managed as a stable production route.</small>}</label><label>Venue<input required value={draft.venue} onChange={(e) => setDraft({ ...draft, venue: e.target.value })}/></label></div>
         <label>Description<textarea rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label>
         <div className="form-grid"><label>Starts<input type="datetime-local" required value={draft.startAt} onChange={(e) => setDraft({ ...draft, startAt: e.target.value })}/></label><label>Ends<input type="datetime-local" required value={draft.endAt} onChange={(e) => setDraft({ ...draft, endAt: e.target.value })}/></label></div>
         <label>Timezone<input required value={draft.timezone} onChange={(e) => setDraft({ ...draft, timezone: e.target.value })}/></label>

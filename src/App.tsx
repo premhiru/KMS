@@ -84,6 +84,10 @@ export default function App() {
     return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Opening OpenSpeaker</h1><p>Loading the shared event workspace…</p></main>
   }
 
+  if (syncStatus === 'error') {
+    return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Workspace unavailable</h1><p role="alert">{persistenceError ?? 'OpenSpeaker could not load the shared event safely.'}</p><button className="button primary" onClick={() => window.location.reload()}>Retry</button></main>
+  }
+
   if (route === 'cfp') {
     return <main className="public-surface"><PublicCfp /></main>
   }
@@ -98,11 +102,11 @@ export default function App() {
   }
 
   if (session?.role === 'reviewer') {
-    return <main className="public-surface role-workspace">{syncStatus === 'error' && <div className="sync-banner error" role="alert">{persistenceError}</div>}<ReviewWorkspace currentReviewerEmail={session.user.email} reviewerName={session.user.name} defaultMode="reviewer" /></main>
+    return <main className="public-surface role-workspace"><ReviewWorkspace currentReviewerEmail={session.user.email} reviewerName={session.user.name} defaultMode="reviewer" /></main>
   }
 
   if (session?.role === 'speaker') {
-    return <main className="public-surface role-workspace">{(syncStatus === 'saving' || syncStatus === 'error') && <div className={`sync-banner ${syncStatus}`} role="status">{syncStatus === 'saving' ? 'Saving your portal…' : persistenceError}</div>}<SpeakerPortal /></main>
+    return <main className="public-surface role-workspace">{syncStatus === 'saving' && <div className="sync-banner saving" role="status">Saving your portal…</div>}<SpeakerPortal /></main>
   }
 
   function go(next: string) {
@@ -152,7 +156,7 @@ export default function App() {
         </div>
       </header>
       <main className="shell-content">
-        {(syncStatus === 'saving' || syncStatus === 'error') && <div className={`sync-banner ${syncStatus}`} role="status">{syncStatus === 'saving' ? 'Saving to the shared workspace…' : persistenceError ?? 'Workspace sync needs attention.'}</div>}
+        {syncStatus === 'saving' && <div className="sync-banner saving" role="status">Saving to the shared workspace…</div>}
         {route === 'dashboard' && <Dashboard onNavigate={go} />}
         {route === 'submissions' && <OrganizerSubmissions onOpenReview={(submissionId) => { setReviewSubmissionId(submissionId); go('reviews') }} />}
         {route === 'cfp-builder' && <CfpBuilder publicPath={`${window.location.origin}${window.location.pathname}#/cfp`} />}

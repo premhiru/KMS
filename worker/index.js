@@ -185,6 +185,12 @@ async function identityAndMembership(request, env, workspaceId, minimumRole = 's
   await env.DB.prepare(`INSERT INTO users (id,email,name,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET email=excluded.email,name=excluded.name,updated_at=excluded.updated_at`).bind(user.id, user.email, user.name, timestamp, timestamp).run()
   const workspace = await env.DB.prepare(`SELECT id FROM workspaces WHERE id=?`).bind(workspaceId).first()
   if (!workspace) {
+    const bootstrapId = String(env.BOOTSTRAP_OWNER_ID || '')
+    const bootstrapEmail = String(env.BOOTSTRAP_OWNER_EMAIL || '').trim().toLowerCase()
+    const localBootstrap = env.ALLOW_LOCAL_AUTH === 'true'
+    if (!localBootstrap && (!bootstrapId || !bootstrapEmail || user.id !== bootstrapId || user.email !== bootstrapEmail)) {
+      throw new ApiError(403, 'WORKSPACE_NOT_INITIALIZED', 'This workspace must be initialized by its configured bootstrap owner.')
+    }
     await env.DB.batch([
       env.DB.prepare(`INSERT OR IGNORE INTO workspaces (id,name,created_at) VALUES (?,?,?)`).bind(workspaceId, request.headers.get('x-openspeaker-workspace-name')?.slice(0, 120) || 'OpenSpeaker workspace', timestamp),
       env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'owner',? WHERE NOT EXISTS (SELECT 1 FROM memberships WHERE workspace_id=?)`).bind(workspaceId, user.id, timestamp, workspaceId),
@@ -230,15 +236,6 @@ function parseJsonColumn(value, fallback) {
   try { return JSON.parse(value) } catch { return fallback }
 }
 
-function stableKey(value) {
-  let hash = 2166136261
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
-}
-
 function splitName(value) {
   const parts = String(value || '').trim().split(/\s+/).filter(Boolean)
   return { firstName: parts.shift() || 'Speaker', lastName: parts.join(' ') }
@@ -252,12 +249,13 @@ export function mergePublicSubmissionsIntoState(state, rows) {
     submissions: Array.isArray(state.submissions) ? [...state.submissions] : [],
   }
   const knownSourceIds = new Set(merged.submissions.map((submission) => submission?.sourceSubmissionId || submission?.source?.publicSubmissionId).filter(Boolean))
+  const deletedSourceIds = new Set(Array.isArray(state.deletedSourceSubmissionIds) ? state.deletedSourceSubmissionIds : [])
   const knownSubmissionIds = new Set(merged.submissions.map((submission) => submission?.id))
   const speakerByEmail = new Map(merged.speakers.filter((speaker) => typeof speaker?.email === 'string').map((speaker) => [speaker.email.trim().toLowerCase(), speaker]))
   let importedCount = 0
 
   for (const row of rows || []) {
-    if (!row?.id || knownSourceIds.has(row.id) || knownSubmissionIds.has(`cfp-${row.id}`)) continue
+    if (!row?.id || deletedSourceIds.has(row.id) || knownSourceIds.has(row.id) || knownSubmissionIds.has(`cfp-${row.id}`)) continue
     const payload = parseJsonColumn(row.payload_json, {})
     const people = [{
       name: row.speaker_name,
@@ -267,13 +265,13 @@ export function mergePublicSubmissionsIntoState(state, rows) {
       bio: payload.bio || payload.speakerBio,
     }, ...(Array.isArray(payload.coSpeakers) ? payload.coSpeakers : [])]
     const speakerIds = []
-    for (const person of people) {
+    for (const [personIndex, person] of people.entries()) {
       const email = String(person?.email || '').trim().toLowerCase()
       if (!validEmail(email)) continue
       let speaker = speakerByEmail.get(email)
       if (!speaker) {
         const names = splitName(person.name)
-        const speakerId = `speaker-cfp-${stableKey(email)}`
+        const speakerId = `speaker-cfp-${row.id}-${personIndex}`
         speaker = {
           id: speakerId, ...names, email, company: String(person.company || ''), jobTitle: String(person.jobTitle || ''),
           bio: String(person.bio || ''), status: 'invited', availability: [], createdAt: row.created_at, updatedAt: row.updated_at,
@@ -341,12 +339,11 @@ async function publicCfp(request, env, requestId, workspaceId, eventSlug) {
     const missing = answer === undefined || answer === null || answer === '' || (Array.isArray(answer) && answer.length === 0)
     if (visible && question.required === true && missing) throw new ApiError(422, 'REQUIRED_QUESTION_MISSING', 'A required CFP question is missing.', { questionId: question.id || question.key })
   }
-  const existing = await env.DB.prepare(`SELECT COUNT(*) AS count FROM public_submissions WHERE event_id=? AND lower(speaker_email)=?`).bind(event.id, input.speakerEmail).first()
   const perSpeakerLimit = config.allowMultiple === true ? Math.max(1, Number(config.submissionLimit) || 25) : 1
-  if (Number(existing?.count || 0) >= perSpeakerLimit) throw new ApiError(409, 'SUBMISSION_LIMIT_REACHED', 'This speaker has reached the proposal limit for this event.', { limit: perSpeakerLimit, allowMultiple: config.allowMultiple === true })
   const submissionId = id('submission')
   const timestamp = now()
-  await env.DB.prepare(`INSERT INTO public_submissions (id,workspace_id,event_id,title,abstract,speaker_name,speaker_email,track,format,consent,status,payload_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,1,'needs-review',?,?,?)`).bind(submissionId, workspaceId, event.id, input.title, input.abstract, input.speakerName, input.speakerEmail, input.track, input.format, JSON.stringify(input), timestamp, timestamp).run()
+  const inserted = await env.DB.prepare(`INSERT INTO public_submissions (id,workspace_id,event_id,title,abstract,speaker_name,speaker_email,track,format,consent,status,payload_json,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,1,'needs-review',?,?,? WHERE (SELECT COUNT(*) FROM public_submissions WHERE event_id=? AND lower(speaker_email)=?) < ?`).bind(submissionId, workspaceId, event.id, input.title, input.abstract, input.speakerName, input.speakerEmail, input.track, input.format, JSON.stringify(input), timestamp, timestamp, event.id, input.speakerEmail, perSpeakerLimit).run()
+  if (Number(inserted?.meta?.changes ?? inserted?.changes ?? 0) < 1) throw new ApiError(409, 'SUBMISSION_LIMIT_REACHED', 'This speaker has reached the proposal limit for this event.', { limit: perSpeakerLimit, allowMultiple: config.allowMultiple === true })
   await audit(env, workspaceId, null, 'cfp.submitted', 'submission', submissionId, { eventId: event.id }, requestId)
   return json({ data: { id: submissionId, status: 'needs-review', submittedAt: timestamp } }, 201, request, env, requestId)
 }
@@ -364,7 +361,12 @@ export function sanitizePublicState(state) {
     bio: speaker.bio, pronouns: speaker.pronouns, photoUrl: speaker.photoUrl, status: speaker.status,
     email: '', availability: [], createdAt: speaker.createdAt, updatedAt: speaker.updatedAt,
   })) : []
-  return { schemaVersion: state.schemaVersion, lastUpdatedAt: state.lastUpdatedAt, event: state.event, speakers, submissions: publicSubmissions, sessions, reviews: [], tasks: [], templates: [], communicationLog: [] }
+  let publicEvent = state.event
+  if (state.event && typeof state.event === 'object') {
+    const { resources: _resources, cfp: _cfp, ...safeEvent } = state.event
+    publicEvent = safeEvent
+  }
+  return { schemaVersion: state.schemaVersion, lastUpdatedAt: state.lastUpdatedAt, event: publicEvent, speakers, submissions: publicSubmissions, sessions, reviews: [], tasks: [], templates: [], communicationLog: [] }
 }
 
 async function publicEventState(request, env, requestId, workspaceId, eventSlug) {
@@ -427,7 +429,7 @@ async function reviewerQueue(request, env, requestId, workspaceId, eventId) {
   const speakers = (loaded.state.speakers || []).filter((speaker) => visibleSpeakerIds.has(speaker.id))
   const reviews = (loaded.state.reviews || []).filter((review) => review.reviewerEmail === access.user.email || review.reviewerUserId === access.user.id)
   const roundIds = new Set(assignments.map((assignment) => assignment.roundId).filter(Boolean))
-  const visibleRounds = rounds.filter((round) => roundIds.has(round.id)).map(({ id: roundId, planId, name, rubric, instructions, status, dueAt, blind }) => ({ id: roundId, planId, name, rubric, instructions, status, dueAt, blind }))
+  const visibleRounds = rounds.filter((round) => roundIds.has(round.id)).map(({ id: roundId, planId, name, rubric, instructions, status, opensAt, dueAt, blind }) => ({ id: roundId, planId, name, rubric, instructions, status, opensAt, dueAt, blind }))
   const planIds = new Set([...assignments.map((assignment) => assignment.planId), ...visibleRounds.map((round) => round.planId)].filter(Boolean))
   const plans = (Array.isArray(loaded.state.evaluationPlans) ? loaded.state.evaluationPlans : []).filter((plan) => planIds.has(plan.id)).map(({ id: planId, name, label }) => ({ id: planId, name, label }))
   return json({ data: { revision: loaded.row.revision, event: loaded.state.event, assignments, rounds: visibleRounds, plans, submissions, speakers, reviews } }, 200, request, env, requestId, { ETag: `"${loaded.row.revision}"` })
@@ -469,7 +471,7 @@ async function members(request, env, requestId, workspaceId, memberUserId) {
 }
 
 async function submissions(request, env, requestId, workspaceId, eventId, submissionId) {
-  const access = await identityAndMembership(request, env, workspaceId, request.method === 'GET' ? 'reviewer' : 'organizer')
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
   if (request.method === 'GET' && !submissionId) {
     const result = await env.DB.prepare(`SELECT id,title,abstract,speaker_name,speaker_email,track,format,status,created_at,updated_at FROM public_submissions WHERE workspace_id=? AND event_id=? ORDER BY created_at DESC LIMIT 500`).bind(workspaceId, eventId).all()
     return json({ data: result.results || [] }, 200, request, env, requestId)
@@ -767,8 +769,13 @@ async function reviewerMutation(request, env, requestId, workspaceId, eventId) {
   const assignments = Array.isArray(loaded.state.evaluationAssignments) ? loaded.state.evaluationAssignments : []
   const assignment = assignments.find((item) => item.id === body.assignmentId && item.submissionId === body.submissionId)
   if (!assignment || assignmentReviewerEmail(assignment) !== access.user.email) throw new ApiError(403, 'REVIEW_ASSIGNMENT_FORBIDDEN', 'You may only review submissions assigned to your authenticated email.')
+  const round = (Array.isArray(loaded.state.evaluationRounds) ? loaded.state.evaluationRounds : []).find((item) => item.id === assignment.roundId)
+  const currentTime = Date.now()
+  if (!round || round.status !== 'open' || (round.opensAt && Date.parse(round.opensAt) > currentTime) || !round.dueAt || Date.parse(round.dueAt) < currentTime) throw new ApiError(409, 'REVIEW_ROUND_CLOSED', 'This evaluation round is not currently open for reviews.')
   const scores = body.review?.scores
   if (!scores || typeof scores !== 'object' || Array.isArray(scores) || Object.keys(scores).length < 1 || Object.keys(scores).length > 20 || !Object.values(scores).every((score) => typeof score === 'number' && score >= 1 && score <= 5)) throw new ApiError(422, 'VALIDATION_ERROR', 'review.scores must contain 1–20 scores from 1 to 5.', { field: 'review.scores' })
+  const rubric = Array.isArray(round.rubric) ? round.rubric : []
+  if (rubric.length > 0 && (Object.keys(scores).some((criterionId) => !rubric.some((criterion) => criterion.id === criterionId)) || rubric.some((criterion) => typeof scores[criterion.id] !== 'number' || scores[criterion.id] < 1 || scores[criterion.id] > criterion.maxScore))) throw new ApiError(422, 'VALIDATION_ERROR', 'review.scores must match the round rubric and score ranges.', { field: 'review.scores' })
   const note = typeof body.review.note === 'string' ? body.review.note.slice(0, 5000) : ''
   const status = body.assignmentStatus || (body.abstain === true ? 'abstained' : 'completed')
   if (!new Set(['assigned', 'in-progress', 'completed', 'abstained']).has(status)) throw new ApiError(422, 'VALIDATION_ERROR', 'Invalid assignment status.', { field: 'assignmentStatus' })
@@ -776,10 +783,11 @@ async function reviewerMutation(request, env, requestId, workspaceId, eventId) {
   const reviewId = `review-${assignment.id}`
   const review = { id: reviewId, assignmentId: assignment.id, submissionId: body.submissionId, reviewerName: access.user.name || access.user.email, reviewerEmail: access.user.email, reviewerUserId: access.user.id, scores, note, abstained: body.abstain === true, updatedAt: timestamp }
   const existingReviews = Array.isArray(loaded.state.reviews) ? loaded.state.reviews : []
+  const reviewsWithoutAssignment = existingReviews.filter((item) => item.id !== reviewId && item.assignmentId !== assignment.id)
   const nextState = {
     ...loaded.state,
     lastUpdatedAt: timestamp,
-    reviews: existingReviews.some((item) => item.id === reviewId) ? existingReviews.map((item) => item.id === reviewId ? review : item) : [...existingReviews, review],
+    reviews: status === 'completed' ? [...reviewsWithoutAssignment, review] : reviewsWithoutAssignment,
     evaluationAssignments: assignments.map((item) => item.id === assignment.id ? { ...item, status, abstain: body.abstain === true, abstainReason: body.abstain === true ? note.replace(/^Abstained:\s*/i, '') : undefined, completedAt: status === 'completed' || status === 'abstained' ? timestamp : undefined, updatedAt: timestamp } : item),
   }
   const updated = await env.DB.prepare(EVENT_STATE_UPSERT_SQL).bind(eventId, JSON.stringify(nextState), access.user.id, timestamp, body.expectedRevision, eventId, body.expectedRevision, eventId, workspaceId, body.expectedRevision).first()

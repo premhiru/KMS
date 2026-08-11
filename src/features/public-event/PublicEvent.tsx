@@ -44,6 +44,7 @@ export function PublicEvent() {
   })
   const origin = typeof window === 'undefined' ? 'https://your-event.example' : `${window.location.origin}${window.location.pathname}`
   const embedCode = `<iframe src="${origin}#/event" title="${state.event.name} agenda" width="100%" height="720" style="border:0" loading="lazy"></iframe>`
+  const eventDates = `${new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', timeZone: state.event.timezone }).format(new Date(state.event.startAt))}–${new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', timeZone: state.event.timezone }).format(new Date(state.event.endAt))}`
 
   const copyEmbed = async () => {
     try {
@@ -57,7 +58,7 @@ export function PublicEvent() {
 
   return <div className="public-event-feature">
     <nav className="event-nav"><strong>OPEN<span>SPEAKER</span></strong><div><a href="#event-speakers">Speakers</a><a href="#event-agenda">Agenda</a><button onClick={() => setShowEmbed(!showEmbed)}><Code2 size={15}/>Embed</button></div></nav>
-    <header className="event-hero"><div><span>SEPTEMBER 16–17 · SAN FRANCISCO</span><h1>Meet the people<br/>building what’s next.</h1><p>A practical program from the engineers, researchers, and product leaders shaping dependable AI.</p><a href="#event-agenda">Build your itinerary</a></div><div className="hero-stat"><b>{publicSessions.length}</b><span>published sessions</span><b>{publicSpeakers.length}</b><span>confirmed speakers</span></div></header>
+    <header className="event-hero"><div><span>{eventDates.toUpperCase()} · {state.event.venue.toUpperCase()}</span><h1>{state.event.name}</h1><p>{state.event.description ?? 'Meet the speakers and explore the published program.'}</p><a href="#event-agenda">Build your itinerary</a></div><div className="hero-stat"><b>{publicSessions.length}</b><span>published sessions</span><b>{publicSpeakers.length}</b><span>confirmed speakers</span></div></header>
 
     {showEmbed && <section className="embed-panel"><div><Code2/><h2>Embed this public agenda</h2><p>Paste this iframe into an event site. It reads the event’s shared published schedule.</p></div><pre>{embedCode}</pre><button onClick={copyEmbed}>{copied ? <Check size={16}/> : <Clipboard size={16}/>} {copied ? 'Copied' : 'Copy embed code'}</button></section>}
 
