@@ -20,11 +20,18 @@ import type {
   ReviewerMutationInput,
   ReviewerMutationReceipt,
   ReviewerQueue,
+  ReminderAutomationStatus,
   RequestOptions,
+  RunRemindersInput,
+  RunRemindersReceipt,
   SendEmailInput,
   SendEmailReceipt,
   SessionProbe,
   StateWriteOptions,
+  StateHistory,
+  StateRevisionDetail,
+  StateRollbackInput,
+  StateRollbackReceipt,
   SubmissionStatusReceipt,
   UploadedAsset,
   VersionedAppState,
@@ -47,12 +54,17 @@ import {
   parsePublicEvent,
   parseReviewerMutation,
   parseReviewerQueue,
+  parseReminderAutomationStatus,
+  parseRunRemindersReceipt,
   parseSubmissionReceipt,
   parseSendEmailReceipt,
   parseSpeakerPortal,
   parseSubmissions,
   parseUploadedAsset,
   parseVersionedState,
+  parseStateHistory,
+  parseStateRevisionDetail,
+  parseStateRollbackReceipt,
   parseWorkspaceSession,
   ResponseValidationError,
   unwrapData,
@@ -134,6 +146,30 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
       },
       signal: options.signal, timeoutMs: options.timeoutMs,
       parse: (value, response) => writeReceipt(value, response, state),
+    })
+  }
+
+  getStateHistory(options: RequestOptions = {}): Promise<StateHistory> {
+    return this.transport.request({ path: this.eventPath('state/history'), signal: options.signal, timeoutMs: options.timeoutMs, parse: parseStateHistory })
+  }
+
+  getStateRevision(revision: number, options: RequestOptions = {}): Promise<StateRevisionDetail> {
+    if (!Number.isSafeInteger(revision) || revision < 1) return Promise.reject(new ApiError('A positive state revision is required.', {
+      code: 'INVALID_REVISION', requestId: 'client-validation', method: 'GET', url: this.eventPath(`state/history/${revision}`),
+    }))
+    return this.transport.request({
+      path: this.eventPath(`state/history/${revision}`), signal: options.signal, timeoutMs: options.timeoutMs,
+      parse: (value, response) => parseStateRevisionDetail(value, response.headers.get('etag')),
+    })
+  }
+
+  rollbackState(input: StateRollbackInput, options: RequestOptions = {}): Promise<StateRollbackReceipt> {
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1 || !Number.isSafeInteger(input.targetRevision) || input.targetRevision < 1) return Promise.reject(new ApiError('Positive expected and target revisions are required.', {
+      code: 'INVALID_REVISION', requestId: 'client-validation', method: 'POST', url: this.eventPath('state/rollback'),
+    }))
+    return this.transport.request({
+      path: this.eventPath('state/rollback'), method: 'POST', body: input, signal: options.signal, timeoutMs: options.timeoutMs,
+      parse: (value, response) => parseStateRollbackReceipt(value, response.headers.get('etag')),
     })
   }
 
@@ -244,6 +280,17 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
     return this.transport.request({
       path: this.eventPath('integrations/accelevents/sync'), method: 'POST', body: { idempotencyKey },
       signal: options.signal, timeoutMs: options.timeoutMs, parse: parseAcceleventsReceipt,
+    })
+  }
+
+  getReminderAutomation(options: RequestOptions = {}): Promise<ReminderAutomationStatus> {
+    return this.transport.request({ path: this.eventPath('reminders'), signal: options.signal, timeoutMs: options.timeoutMs, parse: parseReminderAutomationStatus })
+  }
+
+  runReminders(input: RunRemindersInput = {}, options: RequestOptions = {}): Promise<RunRemindersReceipt> {
+    return this.transport.request({
+      path: this.eventPath('reminders/run'), method: 'POST', body: input,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseRunRemindersReceipt,
     })
   }
 

@@ -58,7 +58,7 @@ describe('evaluation workflow', () => {
     const once = appReducer(state, { type: 'submission/decide', id: 'submission-tools', status: 'accepted', at })
     const twice = appReducer(once, { type: 'submission/decide', id: 'submission-tools', status: 'accepted', at })
     const speakerId = state.submissions.find((item) => item.id === 'submission-tools')!.speakerIds[0]
-    expect(twice.tasks.filter((task) => task.speakerId === speakerId)).toHaveLength(5)
-    expect(new Set(twice.tasks.filter((task) => task.speakerId === speakerId).map((task) => task.kind)).size).toBe(5)
+    expect(twice.tasks.filter((task) => task.speakerId === speakerId)).toHaveLength(6)
+    expect(new Set(twice.tasks.filter((task) => task.speakerId === speakerId).map((task) => task.kind)).size).toBe(6)
   })
 })

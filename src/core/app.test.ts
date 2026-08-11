@@ -13,10 +13,10 @@ describe('application lifecycle', () => {
     const speakerTasks = accepted.tasks.filter((task) => task.speakerId === 'speaker-leo')
 
     expect(accepted.submissions.find((item) => item.id === 'submission-tools')?.status).toBe('accepted')
-    expect(speakerTasks.map((task) => task.kind).sort()).toEqual(['agreement', 'headshot', 'profile', 'session-details', 'slides'])
+    expect(speakerTasks.map((task) => task.kind).sort()).toEqual(['agreement', 'headshot', 'profile', 'session-details', 'slides', 'supporting-document'])
 
     const acceptedAgain = appReducer(accepted, { type: 'submission/decide', id: 'submission-tools', status: 'accepted', at })
-    expect(acceptedAgain.tasks.filter((task) => task.speakerId === 'speaker-leo')).toHaveLength(5)
+    expect(acceptedAgain.tasks.filter((task) => task.speakerId === 'speaker-leo')).toHaveLength(6)
   })
 
   it('completes and reopens a persisted onboarding task', () => {
@@ -26,6 +26,24 @@ describe('application lifecycle', () => {
     expect(completed.tasks.find((item) => item.id === task.id)?.completedAt).toBe('2026-08-11T10:00:00.000Z')
     const reopened = appReducer(completed, { type: 'task/toggle', id: task.id, completed: false, at: '2026-08-11T11:00:00.000Z' })
     expect(reopened.tasks.find((item) => item.id === task.id)?.completedAt).toBeUndefined()
+  })
+
+  it('persists an organizer-defined supporting-document request and uploaded version', () => {
+    const seed = createSeedState()
+    const at = '2026-08-11T10:00:00.000Z'
+    const task = {
+      id: 'task-speaker-maya-release', speakerId: 'speaker-maya', kind: 'supporting-document' as const,
+      title: 'Upload signed media release', dueAt: '2026-08-20T00:00:00.000Z', updatedAt: at,
+    }
+    const assigned = appReducer(seed, { type: 'task/upsert', task, at })
+    const uploaded = appReducer(assigned, { type: 'task/toggle', id: task.id, completed: true, asset: {
+      id: 'asset-release', name: 'release.pdf', type: 'application/pdf', size: 512, selectedAt: at, storage: 'r2',
+    }, at })
+
+    expect(uploaded.tasks.find((item) => item.id === task.id)).toMatchObject({
+      kind: 'supporting-document', completedAt: at, assetVersion: 1, approvalStatus: 'pending',
+      asset: { id: 'asset-release', name: 'release.pdf' },
+    })
   })
 
   it('detects room and speaker collisions before publishing', () => {

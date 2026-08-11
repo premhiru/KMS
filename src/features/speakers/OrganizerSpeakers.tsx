@@ -66,6 +66,7 @@ function SpeakerEditor({ speaker, announce }: { speaker: Speaker; announce: (mes
     bio: speaker.bio,
     status: speaker.status,
   })
+  const [documentRequest, setDocumentRequest] = useState({ title: '', dueAt: '' })
 
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -107,6 +108,19 @@ function SpeakerEditor({ speaker, announce }: { speaker: Speaker; announce: (mes
       at,
     })
     announce(`Reminder recorded in the outbox for ${speakerName(speaker)}.`)
+  }
+
+  const addDocumentRequest = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const title = documentRequest.title.trim()
+    if (!title || !documentRequest.dueAt) return
+    const at = nowIso()
+    dispatch({ type: 'task/upsert', task: {
+      id: createId('task-document'), speakerId: speaker.id, kind: 'supporting-document', title,
+      dueAt: new Date(documentRequest.dueAt).toISOString(), updatedAt: at,
+    }, at })
+    setDocumentRequest({ title: '', dueAt: '' })
+    announce(`Assigned “${title}” to ${speakerName(speaker)}.`)
   }
 
   return (
@@ -154,6 +168,13 @@ function SpeakerEditor({ speaker, announce }: { speaker: Speaker; announce: (mes
         <span>{tasks.filter((task) => task.completedAt).length} of {tasks.length} complete</span>
       </div>
       <TaskList speaker={speaker} tasks={tasks} announce={announce} />
+      <form className="spk-form" onSubmit={addDocumentRequest}>
+        <div className="spk-form-grid">
+          <label>Document request<input required placeholder="e.g. Signed release or worksheet" value={documentRequest.title} onChange={(event) => setDocumentRequest({ ...documentRequest, title: event.target.value })} /></label>
+          <label>Due date<input required type="datetime-local" value={documentRequest.dueAt} onChange={(event) => setDocumentRequest({ ...documentRequest, dueAt: event.target.value })} /></label>
+        </div>
+        <div className="spk-form-actions"><button className="spk-button spk-button-secondary" type="submit">Assign document upload</button></div>
+      </form>
     </section>
   )
 }
@@ -207,4 +228,3 @@ export function OrganizerSpeakers() {
     </div>
   )
 }
-

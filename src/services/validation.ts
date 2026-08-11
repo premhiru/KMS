@@ -1,5 +1,5 @@
 import { validateAppState } from '../core/storage'
-import type { AppState, SubmissionStatus } from '../domain'
+import type { AppState, ReminderSchedule, SubmissionStatus } from '../domain'
 import type {
   AuditEntry,
   HealthStatus,
@@ -14,6 +14,12 @@ import type {
   PublicSubmissionRecord,
   ReviewerMutationReceipt,
   ReviewerQueue,
+  ReminderAutomationRun,
+  ReminderAutomationStatus,
+  RunRemindersReceipt,
+  StateHistory,
+  StateRevisionDetail,
+  StateRollbackReceipt,
   SubmissionStatusReceipt,
   SendEmailReceipt,
   UploadedAsset,
@@ -56,6 +62,16 @@ function numberField(record: Record<string, unknown>, field: string, issues: str
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     issues.push(`${field} must be a non-negative integer.`)
     return 0
+  }
+  return value
+}
+
+function optionalNumber(record: Record<string, unknown>, field: string, issues: string[]): number | undefined {
+  const value = record[field]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    issues.push(`${field} must be a non-negative integer when present.`)
+    return undefined
   }
   return value
 }
@@ -116,6 +132,60 @@ export function parseVersionedState(value: unknown, etag?: string | null): Versi
     revision,
     state: parseAppState(data.state),
     updatedAt: stringField(data, 'updatedAt', issues),
+  })
+}
+
+export function parseStateHistory(value: unknown): StateHistory {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['state history data must be an object.'])
+  if (!Array.isArray(data.revisions)) issues.push('revisions must be an array.')
+  const revisions = Array.isArray(data.revisions) ? data.revisions.map((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`revisions[${index}] must be an object.`)
+      return { revision: 0, updatedBy: '', createdAt: '', reason: '', sizeBytes: 0 }
+    }
+    const revision = numberField(item, 'revision', issues)
+    if (revision < 1) issues.push(`revisions[${index}].revision must be positive.`)
+    return {
+      revision,
+      updatedBy: stringField(item, 'updated_by', issues),
+      createdAt: stringField(item, 'created_at', issues),
+      reason: stringField(item, 'reason', issues, true),
+      sizeBytes: numberField(item, 'size_bytes', issues),
+    }
+  }) : []
+  const currentRevision = numberField(data, 'currentRevision', issues)
+  if (currentRevision < 1) issues.push('currentRevision must be positive.')
+  return finish(issues, { eventId: stringField(data, 'eventId', issues), currentRevision, revisions })
+}
+
+export function parseStateRevisionDetail(value: unknown, etag?: string | null): StateRevisionDetail {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['state revision data must be an object.'])
+  const revision = numberField(data, 'revision', issues)
+  if (revision < 1) issues.push('revision must be positive.')
+  const etagRevision = etag?.replace(/^W\//, '').replace(/^"|"$/g, '')
+  if (etagRevision !== undefined && etagRevision !== String(revision)) issues.push('ETag and body revision must match.')
+  return finish(issues, {
+    eventId: stringField(data, 'eventId', issues), revision, state: parseAppState(data.state),
+    updatedBy: stringField(data, 'updatedBy', issues), createdAt: stringField(data, 'createdAt', issues), reason: stringField(data, 'reason', issues, true),
+  })
+}
+
+export function parseStateRollbackReceipt(value: unknown, etag?: string | null): StateRollbackReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['state rollback data must be an object.'])
+  const revision = numberField(data, 'revision', issues)
+  const rolledBackFrom = numberField(data, 'rolledBackFrom', issues)
+  const targetRevision = numberField(data, 'targetRevision', issues)
+  if (revision < 1 || rolledBackFrom < 1 || targetRevision < 1) issues.push('rollback revisions must be positive.')
+  const etagRevision = etag?.replace(/^W\//, '').replace(/^"|"$/g, '')
+  if (etagRevision !== undefined && etagRevision !== String(revision)) issues.push('ETag and body revision must match.')
+  return finish(issues, {
+    eventId: stringField(data, 'eventId', issues), revision, rolledBackFrom, targetRevision, updatedAt: stringField(data, 'updatedAt', issues),
   })
 }
 
@@ -280,6 +350,7 @@ export function parseIntegrationStatus(value: unknown): IntegrationStatus {
       idempotencyKey: stringField(item, 'idempotency_key', issues), status: item.status as IntegrationRunStatus,
       response: isRecord(item.response) ? item.response : {}, errorCode: optionalString(item, 'error_code', issues), errorMessage: optionalString(item, 'error_message', issues),
       startedBy: stringField(item, 'started_by', issues), createdAt: stringField(item, 'created_at', issues), completedAt: optionalString(item, 'completed_at', issues),
+      leaseExpiresAt: optionalString(item, 'lease_expires_at', issues), attemptCount: optionalNumber(item, 'attempt_count', issues),
     }
   }) : []
   const deliveries = Array.isArray(data.deliveries) ? data.deliveries.map((item, index) => {
@@ -295,7 +366,94 @@ export function parseIntegrationStatus(value: unknown): IntegrationStatus {
       createdAt: stringField(item, 'created_at', issues), updatedAt: stringField(item, 'updated_at', issues),
     }
   }) : []
-  return finish(issues, { configured: { resend: isRecord(data.configured) && data.configured.resend === true, accelevents: isRecord(data.configured) && data.configured.accelevents === true }, runs, deliveries })
+  if (data.mappings !== undefined && !Array.isArray(data.mappings)) issues.push('mappings must be an array when present.')
+  const mappings = Array.isArray(data.mappings) ? data.mappings.map((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`mappings[${index}] must be an object.`)
+      return { objectType: 'session' as const, localId: '', remoteId: '', updatedAt: '' }
+    }
+    if (item.object_type !== 'speaker' && item.object_type !== 'session') issues.push(`mappings[${index}].object_type is invalid.`)
+    return {
+      objectType: item.object_type as 'speaker' | 'session', localId: stringField(item, 'local_id', issues), remoteId: stringField(item, 'remote_id', issues), updatedAt: stringField(item, 'updated_at', issues),
+    }
+  }) : []
+  return finish(issues, { configured: { resend: isRecord(data.configured) && data.configured.resend === true, accelevents: isRecord(data.configured) && data.configured.accelevents === true }, runs, deliveries, mappings })
+}
+
+const automationStatuses = ['running', 'succeeded', 'partial', 'failed'] as const
+
+function reminderRun(item: unknown, index: number, issues: string[]): ReminderAutomationRun {
+  if (!isRecord(item)) {
+    issues.push(`runs[${index}] must be an object.`)
+    return {} as ReminderAutomationRun
+  }
+  if (!automationStatuses.includes(item.status as typeof automationStatuses[number])) issues.push(`runs[${index}].status is invalid.`)
+  if (!isRecord(item.result)) issues.push(`runs[${index}].result must be an object.`)
+  return {
+    id: stringField(item, 'id', issues), idempotencyKey: stringField(item, 'idempotency_key', issues),
+    status: item.status as ReminderAutomationRun['status'], result: isRecord(item.result) ? item.result : {},
+    errorMessage: optionalString(item, 'error_message', issues), startedBy: stringField(item, 'started_by', issues),
+    createdAt: stringField(item, 'created_at', issues), completedAt: optionalString(item, 'completed_at', issues),
+  }
+}
+
+function reminderSchedules(value: unknown, issues: string[]): ReminderSchedule[] {
+  if (!Array.isArray(value)) {
+    issues.push('schedules must be an array.')
+    return []
+  }
+  return value.map((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`schedules[${index}] must be an object.`)
+      return {} as ReminderSchedule
+    }
+    if (!['accepted', 'confirmed', 'incomplete-onboarding', 'overdue-tasks', 'custom'].includes(String(item.audience))) issues.push(`schedules[${index}].audience is invalid.`)
+    if (!['once', 'daily', 'weekly'].includes(String(item.cadence))) issues.push(`schedules[${index}].cadence is invalid.`)
+    if (typeof item.enabled !== 'boolean') issues.push(`schedules[${index}].enabled must be a boolean.`)
+    const daysBeforeDue = optionalNumber(item, 'daysBeforeDue', issues)
+    return {
+      id: stringField(item, 'id', issues), name: stringField(item, 'name', issues), templateId: stringField(item, 'templateId', issues),
+      audience: item.audience as ReminderSchedule['audience'], enabled: item.enabled === true, cadence: item.cadence as ReminderSchedule['cadence'],
+      daysBeforeDue, sendAt: optionalString(item, 'sendAt', issues), nextRunAt: optionalString(item, 'nextRunAt', issues), lastRunAt: optionalString(item, 'lastRunAt', issues),
+      timezone: stringField(item, 'timezone', issues), createdAt: stringField(item, 'createdAt', issues), updatedAt: stringField(item, 'updatedAt', issues),
+    }
+  })
+}
+
+export function parseReminderAutomationStatus(value: unknown): ReminderAutomationStatus {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['reminder automation data must be an object.'])
+  if (typeof data.configured !== 'boolean') issues.push('configured must be a boolean.')
+  if (!Array.isArray(data.runs)) issues.push('runs must be an array.')
+  if (!Array.isArray(data.deliveries)) issues.push('deliveries must be an array.')
+  const runs = Array.isArray(data.runs) ? data.runs.map((item, index) => reminderRun(item, index, issues)) : []
+  const deliveries = Array.isArray(data.deliveries) ? data.deliveries.map((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`deliveries[${index}] must be an object.`)
+      return {} as ReminderAutomationStatus['deliveries'][number]
+    }
+    if (!['queued', 'sent', 'failed'].includes(String(item.status))) issues.push(`deliveries[${index}].status is invalid.`)
+    return {
+      id: stringField(item, 'id', issues), runId: stringField(item, 'run_id', issues), scheduleId: stringField(item, 'schedule_id', issues),
+      taskId: stringField(item, 'task_id', issues), speakerId: stringField(item, 'speaker_id', issues), recipientEmail: stringField(item, 'recipient_email', issues),
+      status: item.status as 'queued' | 'sent' | 'failed', providerMessageId: optionalString(item, 'provider_message_id', issues), errorMessage: optionalString(item, 'error_message', issues),
+      createdAt: stringField(item, 'created_at', issues), updatedAt: stringField(item, 'updated_at', issues),
+    }
+  }) : []
+  return finish(issues, { configured: data.configured === true, schedules: reminderSchedules(data.schedules, issues), runs, deliveries })
+}
+
+export function parseRunRemindersReceipt(value: unknown): RunRemindersReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['reminder run receipt data must be an object.'])
+  if (!automationStatuses.includes(data.status as typeof automationStatuses[number])) issues.push('status is invalid.')
+  if (typeof data.replayed !== 'boolean') issues.push('replayed must be a boolean.')
+  if (!isRecord(data.result)) issues.push('result must be an object.')
+  return finish(issues, {
+    runId: stringField(data, 'runId', issues), status: data.status as RunRemindersReceipt['status'], replayed: data.replayed === true, result: isRecord(data.result) ? data.result : {},
+  })
 }
 
 export function parseSendEmailReceipt(value: unknown): SendEmailReceipt {
@@ -342,11 +500,30 @@ export function parseSpeakerPortal(value: unknown, etag?: string | null): Versio
   const resources = Array.isArray(portal.resources) ? portal.resources.map((item, index) => {
     if (!isRecord(item)) {
       issues.push(`portal.resources[${index}] must be an object.`)
-      return { id: '', title: '', body: '' }
+      return { id: '', title: '', body: '', files: [] }
     }
+    if (item.approvalStatus !== undefined && item.approvalStatus !== 'approved') issues.push(`portal.resources[${index}].approvalStatus must be approved.`)
+    if (item.files !== undefined && !Array.isArray(item.files)) issues.push(`portal.resources[${index}].files must be an array when present.`)
+    const files = Array.isArray(item.files) ? item.files.map((file, fileIndex) => {
+      if (!isRecord(file)) {
+        issues.push(`portal.resources[${index}].files[${fileIndex}] must be an object.`)
+        return {} as VersionedSpeakerPortal['portal']['resources'][number]['files'][number]
+      }
+      if (file.approvalStatus !== 'approved') issues.push(`portal.resources[${index}].files[${fileIndex}].approvalStatus must be approved.`)
+      const version = numberField(file, 'version', issues)
+      if (version < 1) issues.push(`portal.resources[${index}].files[${fileIndex}].version must be positive.`)
+      return {
+        id: stringField(file, 'id', issues), name: stringField(file, 'name', issues), assetId: optionalString(file, 'assetId', issues), url: optionalString(file, 'url', issues),
+        contentType: stringField(file, 'contentType', issues), size: numberField(file, 'size', issues), version, approvalStatus: 'approved' as const,
+        uploadedAt: stringField(file, 'uploadedAt', issues), approvedAt: optionalString(file, 'approvedAt', issues),
+      }
+    }) : []
+    const version = optionalNumber(item, 'version', issues)
+    if (version !== undefined && version < 1) issues.push(`portal.resources[${index}].version must be positive.`)
     return {
       id: stringField(item, 'id', issues), title: stringField(item, 'title', issues), body: stringField(item, 'body', issues, true),
       embedUrl: optionalString(item, 'embedUrl', issues), description: optionalString(item, 'description', issues), url: optionalString(item, 'url', issues), type: optionalString(item, 'type', issues),
+      version, approvalStatus: item.approvalStatus === 'approved' ? 'approved' as const : undefined, updatedAt: optionalString(item, 'updatedAt', issues), files,
     }
   }) : []
   const assets = Array.isArray(portal.assets) ? portal.assets.map((item, index) => {

@@ -41,6 +41,7 @@ export type AppAction =
   | { type: 'evaluation/advance'; advancement: EvaluationAdvancement; assignments: EvaluationAssignment[]; at?: string }
   | { type: 'task/upsert'; task: OnboardingTask; at?: string }
   | { type: 'task/toggle'; id: Id; completed: boolean; asset?: OnboardingTask['asset']; at?: string }
+  | { type: 'task/review'; id: Id; status: NonNullable<OnboardingTask['approvalStatus']>; note?: string; at?: string }
   | { type: 'session/upsert'; session: Session; at?: string }
   | { type: 'session/delete'; id: Id; at?: string }
   | { type: 'agenda/publish'; published: boolean; at?: string }
@@ -54,6 +55,7 @@ const taskDefinitions: Array<{ kind: TaskKind; title: string; dueOffsetDays: num
   { kind: 'headshot', title: 'Upload headshot', dueOffsetDays: 12 },
   { kind: 'session-details', title: 'Confirm session details', dueOffsetDays: 18 },
   { kind: 'slides', title: 'Upload presentation slides', dueOffsetDays: 28 },
+  { kind: 'supporting-document', title: 'Upload supporting document', dueOffsetDays: 28 },
 ]
 
 function actionTime(action: AppAction, state: AppState): string {
@@ -245,6 +247,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...task,
         completedAt: action.completed ? at : undefined,
         asset: action.asset ?? task.asset,
+        assetVersion: action.asset ? (task.assetVersion ?? 0) + 1 : task.assetVersion,
+        approvalStatus: action.asset ? 'pending' : task.approvalStatus,
+        approvedAt: action.asset ? undefined : task.approvedAt,
+        updatedAt: at,
+      } : task) })
+    case 'task/review':
+      return touch(state, at, { tasks: state.tasks.map((task) => task.id === action.id ? {
+        ...task,
+        approvalStatus: action.status,
+        approvedAt: action.status === 'approved' ? at : undefined,
+        reviewerNote: action.note?.trim() || undefined,
         updatedAt: at,
       } : task) })
     case 'session/upsert':

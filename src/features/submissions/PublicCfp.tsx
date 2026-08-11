@@ -1,17 +1,17 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useMemo, useState, type FormEvent, type ReactElement } from 'react'
 import { ArrowRight, CalendarClock, CheckCircle2, Route, Sparkles, UserPlus } from 'lucide-react'
 import { createSpeaker, createSubmission, nowIso, useApp } from '../../core'
 import type { CfpQuestion, Id } from '../../domain'
 import './submissions.css'
 
-const categories = [
+const fallbackCategories = [
   { value: 'case-study', label: 'Practical case study', trackHints: ['Applied AI', 'Product & design'] },
   { value: 'open-source', label: 'Open-source project', trackHints: ['Developer tools', 'Infrastructure'] },
   { value: 'research', label: 'Research & evaluation', trackHints: ['Evaluation'] },
   { value: 'leadership', label: 'Leadership & strategy', trackHints: ['Product & design', 'Agents & orchestration'] },
 ] as const
 
-type Category = typeof categories[number]['value']
+type Category = string
 
 interface SpeakerDraft {
   firstName: string
@@ -43,12 +43,14 @@ export interface PublicCfpProps {
 export function PublicCfp({ onSubmitted }: PublicCfpProps) {
   const { state, dispatch, persistenceMode, submitCfp } = useApp()
   const cfp = state.event.cfp
+  const categories = cfp?.routingRules?.filter((rule) => rule.enabled).map((rule) => ({ value: rule.category, label: rule.label, trackHints: [rule.track] })) ?? fallbackCategories
+  const formats = cfp?.formats?.length ? cfp.formats : [{ name: 'Talk', durationMinutes: 30 }, { name: 'Workshop', durationMinutes: 60 }, { name: 'Panel', durationMinutes: 45 }, { name: 'Lightning talk', durationMinutes: 10 }]
   const defaultTrack = state.event.tracks[0] ?? 'General'
   const tracks = state.event.tracks.length > 0 ? state.event.tracks : [defaultTrack]
   const [speaker, setSpeaker] = useState<SpeakerDraft>(blankSpeaker)
   const [coSpeaker, setCoSpeaker] = useState<SpeakerDraft>(blankSpeaker)
   const [includeCoSpeaker, setIncludeCoSpeaker] = useState(false)
-  const [proposal, setProposal] = useState<ProposalDraft>({ category: 'case-study', title: '', abstract: '', track: defaultTrack, format: 'Talk', duration: '30', tags: '', result: '', workshopPlan: '' })
+  const [proposal, setProposal] = useState<ProposalDraft>({ category: categories[0]?.value ?? 'general', title: '', abstract: '', track: categories[0]?.trackHints[0] ?? defaultTrack, format: formats[0]?.name ?? 'Talk', duration: String(formats[0]?.durationMinutes ?? 30), tags: '', result: '', workshopPlan: '' })
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitted, setSubmitted] = useState<{ id: Id; title: string; email: string }>()
@@ -56,11 +58,15 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
   const [serverError, setServerError] = useState<string>()
 
   const visibleQuestions = useMemo(() => (cfp?.questions ?? []).filter((question) => {
+    if (question.conditions?.length) return question.conditions.every((condition) => {
+      const actual = condition.field === 'track' ? proposal.track : condition.field === 'format' ? proposal.format : answers[condition.field] ?? ''
+      return condition.operator === 'notEquals' ? actual !== condition.value : actual === condition.value
+    })
     if (!question.showWhen) return true
     return question.showWhen.field === 'track'
       ? question.showWhen.equals === proposal.track
       : question.showWhen.equals === proposal.format
-  }), [cfp?.questions, proposal.format, proposal.track])
+  }), [answers, cfp?.questions, proposal.format, proposal.track])
 
   const closed = cfp ? !cfp.open || Date.parse(cfp.closeAt) < Date.now() : false
 
@@ -81,7 +87,7 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
   }
 
   function changeFormat(format: string) {
-    const duration = format === 'Workshop' ? '60' : format === 'Panel' ? '45' : format === 'Lightning talk' ? '10' : '30'
+    const duration = String(formats.find((item) => item.name === format)?.durationMinutes ?? 30)
     setProposal((current) => ({ ...current, format, duration }))
     if (format === 'Panel') setIncludeCoSpeaker(true)
   }
@@ -138,6 +144,7 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
           speakerProfile: { ...speaker, email: speaker.email.trim().toLowerCase() },
           coSpeakers: includeCoSpeaker ? [{ name: `${coSpeaker.firstName.trim()} ${coSpeaker.lastName.trim()}`, ...coSpeaker, email: coSpeaker.email.trim().toLowerCase() }] : [],
           customAnswers: { ...answers, result: proposal.result.trim(), workshopPlan: proposal.workshopPlan.trim() },
+          cfpVersion: cfp?.version ?? 1,
         })
         setSubmitted({ id: receipt.id, title: proposal.title.trim(), email: speaker.email.trim().toLowerCase() })
         onSubmitted?.(receipt.id)
@@ -179,13 +186,13 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
       status: 'needs-review',
       tags: [`category:${proposal.category}`, ...proposal.tags.split(',')],
     }, at)
-    dispatch({ type: 'submission/create', submission, at })
+    dispatch({ type: 'submission/create', submission: { ...submission, origin: 'cfp', cfpVersion: cfp?.version ?? 1 }, at })
     setSubmitted({ id: submission.id, title: submission.title, email: primary.email })
     onSubmitted?.(submission.id)
   }
 
   function startAnother() {
-    setProposal({ category: 'case-study', title: '', abstract: '', track: defaultTrack, format: 'Talk', duration: '30', tags: '', result: '', workshopPlan: '' })
+    setProposal({ category: categories[0]?.value ?? 'general', title: '', abstract: '', track: categories[0]?.trackHints[0] ?? defaultTrack, format: formats[0]?.name ?? 'Talk', duration: String(formats[0]?.durationMinutes ?? 30), tags: '', result: '', workshopPlan: '' })
     setCoSpeaker(blankSpeaker)
     setIncludeCoSpeaker(false)
     setAnswers({})
@@ -233,7 +240,7 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
               <Field label="Abstract" error={errors.abstract} hint={`${proposal.abstract.length}/800 characters`}><textarea required aria-invalid={Boolean(errors.abstract)} maxLength={800} rows={7} value={proposal.abstract} onChange={(event) => updateProposal('abstract', event.target.value)} placeholder="What problem did you solve, what did you learn, and what can attendees use?" /></Field>
               <div className="sb-form__row">
                 <Field label="Track" error={errors.track}><select required aria-invalid={Boolean(errors.track)} value={proposal.track} onChange={(event) => updateProposal('track', event.target.value)}>{tracks.map((item) => <option key={item}>{item}</option>)}</select></Field>
-                <Field label="Format"><select value={proposal.format} onChange={(event) => changeFormat(event.target.value)}><option>Talk</option><option>Workshop</option><option>Panel</option><option>Lightning talk</option></select></Field>
+                <Field label="Format"><select value={proposal.format} onChange={(event) => changeFormat(event.target.value)}>{formats.map((item) => <option key={item.name}>{item.name}</option>)}</select></Field>
                 <Field label="Minutes"><input min="5" max="180" type="number" value={proposal.duration} onChange={(event) => updateProposal('duration', event.target.value)} /></Field>
               </div>
               {proposal.category === 'case-study' && <Field label="What measurable result or hard-won lesson can you share?" error={errors.result}><textarea required aria-invalid={Boolean(errors.result)} rows={3} value={proposal.result} onChange={(event) => updateProposal('result', event.target.value)} /></Field>}
@@ -268,11 +275,15 @@ interface FieldProps {
   label: string
   hint?: string
   error?: string
-  children: ReactNode
+  children: ReactElement<Record<string, unknown>>
 }
 
 function Field({ label, hint, error, children }: FieldProps) {
-  return <label className="sb-field"><span>{label}</span>{children}{error ? <small className="sb-field__error">{error}</small> : hint ? <small>{hint}</small> : null}</label>
+  const messageId = `field-message-${String(children.props.name ?? children.props.id ?? label).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+  const control = isValidElement(children) && (error || hint)
+    ? cloneElement(children, { 'aria-describedby': messageId })
+    : children
+  return <label className="sb-field"><span>{label}</span>{control}{error ? <small id={messageId} className="sb-field__error">{error}</small> : hint ? <small id={messageId}>{hint}</small> : null}</label>
 }
 
 interface CustomQuestionProps {

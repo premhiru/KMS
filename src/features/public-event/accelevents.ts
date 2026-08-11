@@ -10,22 +10,27 @@ function localParts(value: string, timezone: string): { date: string; time: stri
 }
 
 export function agendaToAcceleventsCsv(state: AppState): string {
-  return serializeCsv(state.sessions.filter((session) => session.published).map((session) => {
+  const config = state.event.accelevents
+  const fields = config?.destinationFields ?? { title: 'Session Name', description: 'Description', track: 'Track', type: 'Type', location: 'Location', speakers: 'Speakers' }
+  return serializeCsv(state.sessions.filter((session) => !config?.includeOnlyPublishedSessions || session.published).map((session) => {
     const submission = state.submissions.find((item) => item.id === session.submissionId)
     const start = localParts(session.startAt, state.event.timezone)
     const end = localParts(session.endAt, state.event.timezone)
-    const speakers = submission?.speakerIds.map((id) => state.speakers.find((speaker) => speaker.id === id)).filter((speaker) => speaker !== undefined).map(speakerName).join('; ') ?? ''
+    const speakers = submission?.speakerIds.flatMap((id) => {
+      const speaker = state.speakers.find((item) => item.id === id)
+      return speaker ? [speaker] : []
+    }).filter((speaker) => !config?.includeOnlyConfirmedSpeakers || speaker.status === 'confirmed').map(speakerName).join('; ') ?? ''
     return {
-      'Session Name': submission?.title ?? 'Untitled session',
-      Description: submission?.abstract ?? '',
-      Track: submission?.track ?? '',
-      Type: submission?.format ?? '',
-      Location: session.room,
+      [fields.title]: submission?.title ?? 'Untitled session',
+      [fields.description]: submission?.abstract ?? '',
+      [fields.track]: submission?.track ?? '',
+      [fields.type]: submission?.format ?? '',
+      [fields.location]: session.room,
       'Start Date': start.date,
       'Start Time': start.time,
       'End Date': end.date,
       'End Time': end.time,
-      Speakers: speakers,
+      [fields.speakers]: speakers,
       Published: 'Yes',
     }
   }))

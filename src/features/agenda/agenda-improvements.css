@@ -3,3 +3,12 @@
 .agenda-day-picker button.active{background:#6658d6;color:#fff;border-color:#6658d6}
 .agenda-session[draggable="true"]{cursor:grab}
 .agenda-week{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+
+.integration-mapping{background:#fff;border:1px solid var(--af-line);border-radius:11px;margin-bottom:14px;padding:16px}
+.integration-mapping h2{font-size:15px;margin:0}.integration-mapping p{color:#55515f;font-size:11px;line-height:1.5}
+.mapping-grid{display:grid;gap:9px;grid-template-columns:repeat(3,minmax(0,1fr));margin:13px 0}
+.mapping-grid label{color:#504c59;display:flex;flex-direction:column;font-size:9px;font-weight:750;gap:4px;text-transform:capitalize}
+.mapping-grid input{border:1px solid var(--af-line);border-radius:7px;padding:8px}
+.mapping-flags{display:flex;flex-wrap:wrap;gap:16px}.mapping-flags label{align-items:center;display:flex;font-size:10px;gap:6px}
+.integration-status{background:#f5f4f8;border-radius:7px;padding:9px}.integration-status--succeeded{background:#e8f5ef;color:#17624f}.integration-status--failed{background:#fae9eb;color:#7a2630}
+@media(max-width:700px){.mapping-grid{grid-template-columns:1fr}.mapping-flags{flex-direction:column}}

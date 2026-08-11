@@ -5,12 +5,15 @@ import {
   OpenSpeakerApiClient,
   type PublicCfpSubmissionInput,
   type ReviewerMutationInput,
+  type ReviewerMutationReceipt,
   type ReviewerQueue,
   type SpeakerPortalProjection,
   type WorkspaceSession,
 } from '../services'
 import { AppContext } from './app-context'
-import { appReducer } from './reducer'
+import { canAcceptRemoteSnapshot, rebaseAppState, reconcileSavedState } from './reconcile'
+import { appReducer, type AppAction } from './reducer'
+import { applyReviewerReceipt } from './review-reconcile'
 import { exportAppState, importAppState, loadAppState, resetAppState, saveAppState } from './storage'
 
 export interface AppProviderProps {
@@ -22,6 +25,7 @@ export interface AppProviderProps {
 function portalToState(portal: SpeakerPortalProjection): AppState {
   const resources = portal.resources.map((resource) => ({
     id: resource.id, title: resource.title, body: resource.body ?? resource.description ?? '', embedUrl: resource.embedUrl ?? resource.url,
+    version: resource.version, approvalStatus: resource.approvalStatus, updatedAt: resource.updatedAt, files: resource.files,
   })) as ResourcePage[]
   return {
     schemaVersion: APP_SCHEMA_VERSION,
@@ -45,7 +49,7 @@ function queueToState(queue: ReviewerQueue): AppState {
 
 export function AppProvider({ children, initialState, storage }: AppProviderProps) {
   const seedState = useMemo(() => initialState ?? loadAppState(storage), [initialState, storage])
-  const [state, dispatch] = useReducer(appReducer, seedState)
+  const [state, reducerDispatch] = useReducer(appReducer, seedState)
   const [persistenceError, setPersistenceError] = useState<string>()
   const remote = import.meta.env.PROD || import.meta.env.VITE_REMOTE_API === 'true'
   const api = useMemo(() => remote ? new OpenSpeakerApiClient({
@@ -61,12 +65,22 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   const pendingStateRef = useRef(state)
   const savedStateRef = useRef<AppState | null>(remote ? null : state)
   const savingRef = useRef(false)
+  const reviewerSavingRef = useRef(false)
+  const pollingRef = useRef(false)
+  const pollGenerationRef = useRef(0)
+  const localMutationVersionRef = useRef(0)
+
+  const dispatch = useCallback((action: AppAction) => {
+    localMutationVersionRef.current += 1
+    pendingStateRef.current = appReducer(pendingStateRef.current, action)
+    reducerDispatch(action)
+  }, [])
 
   const acceptLoaded = useCallback((nextState: AppState, revision: number) => {
     revisionRef.current = revision
     savedStateRef.current = nextState
     pendingStateRef.current = nextState
-    dispatch({ type: 'state/replace', state: nextState })
+    reducerDispatch({ type: 'state/replace', state: nextState })
     hydratedRef.current = true
     setSyncStatus('saved')
     setPersistenceError(undefined)
@@ -136,6 +150,54 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   }, [acceptLoaded, api, seedState])
 
   useEffect(() => {
+    if (!api || !hydratedRef.current) return
+    const publicRoute = persistenceMode === 'public-readonly'
+    const controller = new AbortController()
+    const generation = ++pollGenerationRef.current
+    const poll = async () => {
+      if (pollingRef.current || savingRef.current || reviewerSavingRef.current || document.hidden || pendingStateRef.current !== savedStateRef.current) return
+      pollingRef.current = true
+      const requestMutationVersion = localMutationVersionRef.current
+      const acceptPoll = (nextState: AppState, revision: number) => {
+        if (canAcceptRemoteSnapshot({
+          incomingRevision: revision,
+          currentRevision: revisionRef.current,
+          requestMutationVersion,
+          currentMutationVersion: localMutationVersionRef.current,
+          hasPendingChanges: pendingStateRef.current !== savedStateRef.current,
+          isSaving: savingRef.current || reviewerSavingRef.current,
+          isCurrentRequest: !controller.signal.aborted && pollGenerationRef.current === generation,
+        })) acceptLoaded(nextState, revision)
+      }
+      try {
+        if (publicRoute) {
+          const loaded = window.location.hash.startsWith('#/cfp') ? await api.getPublicCfp({ signal: controller.signal }) : await api.getPublicEvent({ signal: controller.signal })
+          if ('state' in loaded && loaded.state) acceptPoll(loaded.state, loaded.revision)
+        } else if (session?.role === 'owner' || session?.role === 'organizer') {
+          const loaded = await api.getState({ signal: controller.signal })
+          acceptPoll(loaded.state, loaded.revision)
+        } else if (session?.role === 'reviewer') {
+          const loaded = await api.getReviewerQueue({ signal: controller.signal })
+          acceptPoll(queueToState(loaded), loaded.revision)
+        } else if (session?.role === 'speaker') {
+          const loaded = await api.getSpeakerPortal({ signal: controller.signal })
+          acceptPoll(portalToState(loaded.portal), loaded.revision)
+        }
+      } catch {
+        // A transient poll failure must not replace already-hydrated, usable data.
+      } finally {
+        pollingRef.current = false
+      }
+    }
+    const timer = window.setInterval(() => void poll(), publicRoute ? 10_000 : 2_000)
+    return () => {
+      window.clearInterval(timer)
+      if (pollGenerationRef.current === generation) pollGenerationRef.current += 1
+      controller.abort()
+    }
+  }, [acceptLoaded, api, persistenceMode, session?.role])
+
+  useEffect(() => {
     pendingStateRef.current = state
     if (!api) {
       const result = saveAppState(state, storage)
@@ -163,17 +225,32 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
                   taskUpdates: nextState.tasks.map((task) => ({ id: task.id, completed: Boolean(task.completedAt), assetId: task.asset?.id })),
                 })
                 const projected = portalToState(saved.portal)
+                const reconciled = reconcileSavedState(nextState, pendingStateRef.current, projected)
                 revisionRef.current = saved.revision
                 savedStateRef.current = projected
-                pendingStateRef.current = projected
-                dispatch({ type: 'state/replace', state: projected })
+                pendingStateRef.current = reconciled
+                reducerDispatch({ type: 'state/replace', state: reconciled })
               } else {
                 const saved = await api.putState(nextState, { revision })
+                const reconciled = reconcileSavedState(nextState, pendingStateRef.current, saved.state)
                 revisionRef.current = saved.revision
-                savedStateRef.current = nextState
+                savedStateRef.current = saved.state
+                pendingStateRef.current = reconciled
+                reducerDispatch({ type: 'state/replace', state: reconciled })
               }
             } catch (error) {
-              if (error instanceof ApiError && error.code === 'REVISION_CONFLICT') throw new Error('Another collaborator changed this record. Reload the page before retrying.')
+              if (error instanceof ApiError && error.code === 'REVISION_CONFLICT') {
+                const baseState = savedStateRef.current
+                if (!baseState) throw new Error('The shared workspace changed before this edit could be saved. Reload and retry.')
+                const latest = session?.role === 'speaker' ? await api.getSpeakerPortal() : await api.getState()
+                const latestState = 'portal' in latest ? portalToState(latest.portal) : latest.state
+                const rebased = rebaseAppState(baseState, pendingStateRef.current, latestState)
+                revisionRef.current = latest.revision
+                savedStateRef.current = latestState
+                pendingStateRef.current = rebased
+                reducerDispatch({ type: 'state/replace', state: rebased })
+                continue
+              }
               throw error
             }
           }
@@ -190,26 +267,45 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     return () => window.clearTimeout(timer)
   }, [api, persistenceMode, session?.role, state, storage])
 
-  const reset = useCallback(() => dispatch({ type: 'state/replace', state: resetAppState(storage) }), [storage])
-  const importJson = useCallback((json: string) => { const result = importAppState(json); if (result.ok) dispatch({ type: 'state/replace', state: result.value }); return result }, [])
+  const reset = useCallback(() => dispatch({ type: 'state/replace', state: resetAppState(storage) }), [dispatch, storage])
+  const importJson = useCallback((json: string) => { const result = importAppState(json); if (result.ok) dispatch({ type: 'state/replace', state: result.value }); return result }, [dispatch])
   const exportJson = useCallback(() => exportAppState(state), [state])
   const submitCfp = useCallback(async (input: PublicCfpSubmissionInput) => { if (!api) throw new Error('Public submission transport is available on the deployed application.'); return api.submitCfp(input) }, [api])
   const uploadAsset = useCallback(async (file: File) => { if (!api || persistenceMode !== 'remote') throw new Error('Durable file storage is available to authenticated users on the deployed application.'); return api.uploadAsset(file) }, [api, persistenceMode])
   const downloadAsset = useCallback(async (assetId: string) => { if (!api || persistenceMode !== 'remote') throw new Error('Durable file storage is available to authenticated users on the deployed application.'); return api.downloadAsset(assetId) }, [api, persistenceMode])
   const submitAssignedReview = useCallback(async (input: Omit<ReviewerMutationInput, 'expectedRevision'>) => {
     if (!api || revisionRef.current === null || session?.role !== 'reviewer') throw new Error('A signed-in reviewer assignment is required.')
+    if (reviewerSavingRef.current) throw new Error('A review save is already in progress.')
+    reviewerSavingRef.current = true
     setSyncStatus('saving')
     try {
-      await api.submitReview({ ...input, expectedRevision: revisionRef.current })
-      const queue = await api.getReviewerQueue()
-      acceptLoaded(queueToState(queue), queue.revision)
+      let receipt: ReviewerMutationReceipt
+      let projection = pendingStateRef.current
+      try {
+        receipt = await api.submitReview({ ...input, expectedRevision: revisionRef.current })
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== 'REVISION_CONFLICT') throw error
+        const latest = await api.getReviewerQueue()
+        revisionRef.current = latest.revision
+        projection = queueToState(latest)
+        receipt = await api.submitReview({ ...input, expectedRevision: latest.revision })
+      }
+      acceptLoaded(applyReviewerReceipt(projection, receipt), receipt.revision)
+      try {
+        const queue = await api.getReviewerQueue()
+        if (queue.revision >= receipt.revision) acceptLoaded(queueToState(queue), queue.revision)
+      } catch {
+        // The mutation receipt is authoritative; a transient refresh failure must not report the saved review as failed.
+      }
     } catch (error) {
       setSyncStatus('error')
       setPersistenceError(error instanceof Error ? error.message : 'The review could not be saved.')
       throw error
+    } finally {
+      reviewerSavingRef.current = false
     }
   }, [acceptLoaded, api, session?.role])
 
-  const value = useMemo(() => ({ state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, submitAssignedReview }), [state, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, submitAssignedReview])
+  const value = useMemo(() => ({ state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, submitAssignedReview }), [state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, submitAssignedReview])
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

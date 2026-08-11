@@ -1,60 +1,61 @@
 # Worker API contract
 
-All responses use JSON `{ "data": ... }` or `{ "error": { "code", "message", "details?", "requestId" } }`. Mutating JSON requests use `Content-Type: application/json`. Authenticated routes trust only the hosting platform's `oai-authenticated-user-id`, `oai-authenticated-user-email`, and optional percent-encoded `oai-authenticated-user-full-name` headers. `ALLOW_LOCAL_AUTH=true` enables `x-openai-user-*` aliases for local tests only.
+Responses use `{ "data": ... }` or `{ "error": { "code", "message", "details?", "requestId" } }`. Authenticated routes trust the Sites `oai-authenticated-user-*` headers. `ALLOW_LOCAL_AUTH=true` enables test aliases only. Mutations reject untrusted browser origins.
 
 ## Public
 
-- `GET /api/health` — D1/R2 binding status.
-- `GET /api/public/cfp/:workspaceId/:eventSlug` — open CFP metadata, configuration, revision, and privacy-filtered public state.
-- `POST /api/public/cfp/:workspaceId/:eventSlug` — submit `{ title, abstract, speakerName, speakerEmail, track?, format?, category?, customAnswers?, coSpeakers?, consent: true }`. Returns 201. The server enforces `closeAt`, category-to-track routing, configured track/format values, conditionally visible required questions, and `allowMultiple`/`submissionLimit` per normalized speaker email. Fixed-window abuse responses use 429, code `RATE_LIMITED`, `Retry-After`, and `details.retryAfterSeconds`.
-- `GET /api/public/events/:workspaceId/:eventSlug/state` — privacy-filtered published event state. It contains only published sessions, accepted submissions attached to them, and confirmed attached speaker public fields.
+- `GET /api/health` returns D1/R2 binding status.
+- `GET /api/public/cfp/:workspaceId/:eventSlug` returns public event metadata, `config`, revision, and a privacy-filtered state whose `event.cfp` contains that same server configuration.
+- `POST /api/public/cfp/:workspaceId/:eventSlug` accepts a proposal. The server enforces close time, atomic per-email limits, track/format values, enabled category routing, `conditions`/legacy `showWhen` including prior-answer dependencies, visible required questions, and fixed-window rate limits. When enabled routing rules exist, `category` must match one and the server replaces applicant-supplied track/format with the rule's configured values. The server stamps `cfpVersion`; import stamps `origin: "cfp"`.
+- `GET /api/public/events/:workspaceId/:eventSlug/state` returns published sessions, their accepted submissions, confirmed speakers, and privacy-safe event fields only.
+- `GET /api/public/events/:workspaceId/:eventSlug/speakers/:speakerId/headshot` returns an inline, short-cache image only when that public speaker's headshot task remains completed and approved and its event-scoped R2 asset is JPEG, PNG, or WebP.
 
-## Authenticated workspace
+## Workspace and state
 
-- `GET /api/workspaces/:workspaceId/session` — any member. Returns `{ user: { id, email, name }, role }` from trusted hosting identity and membership.
-- `GET /api/workspaces/:workspaceId/events/:eventId/state` — organizer or higher. Returns `{ event, revision, state, ingestion, updatedAt }` and `ETag`. Before returning, it deterministically merges public CFP records into the state as `needs-review` submissions and linked speakers. `sourceSubmissionId` and stable email-derived speaker IDs make repeated reads and a later PUT idempotent. Original/custom payload, custom answers, and validated co-speakers are retained on `sourcePayload`, `customAnswers`, and linked speaker records. A missing state returns 404 `EVENT_STATE_NEEDS_SEED` with `{ expectedRevision: 0, canSeed: true }`.
-- `PUT /api/workspaces/:workspaceId/events/:eventId/state` — organizer or higher. Body: `{ expectedRevision, event: { name, slug, cfpOpen, cfpConfig }, state }`. A local-only provider seeds with revision `0`; subsequent writes send the last read revision. Stale writes return 409 `REVISION_CONFLICT` with the current revision.
-- `GET /api/workspaces/:workspaceId/events/:eventId/submissions` — organizer or higher; newest first, maximum 500. Reviewers use the identity-filtered reviewer queue and cannot list speaker contact data.
-- `PATCH /api/workspaces/:workspaceId/events/:eventId/submissions/:submissionId` — organizer or higher; body `{ status }`.
-- `POST /api/workspaces/:workspaceId/events/:eventId/assets` — any workspace member. Raw request body, required `X-File-Name` and allowed `Content-Type`; default maximum 10 MB. Returns durable D1 metadata after the R2 write succeeds.
-- `GET /api/workspaces/:workspaceId/events/:eventId/assets/:assetId` — organizer or the authenticated uploader; private attachment response.
-- `DELETE /api/workspaces/:workspaceId/events/:eventId/assets/:assetId` — organizer or higher.
-- `GET /api/workspaces/:workspaceId/members` — organizer or higher.
-- `POST /api/workspaces/:workspaceId/members` — owner; body `{ userId, email, name?, role }`.
-- `PATCH /api/workspaces/:workspaceId/members/:userId` — owner; body `{ role }`.
-- `DELETE /api/workspaces/:workspaceId/members/:userId` — owner.
-- `GET /api/workspaces/:workspaceId/audit` — organizer or higher; latest 250 entries.
+- `GET /api/workspaces/:workspaceId/session` returns `{ user, role }` for a member.
+- `GET /api/workspaces/:workspaceId/events/:eventId/state` is organizer-only and returns `{ event, revision, state, ingestion, updatedAt }`. It deterministically imports/reconciles normalized CFP records.
+- `PUT /api/workspaces/:workspaceId/events/:eventId/state` is organizer-only. Body: `{ expectedRevision, event: { name, slug, cfpOpen, cfpConfig }, state }`. The Worker validates AppState schema 1, required entities, enums, dates, bounds, unique IDs, and references. Stale writes return `409 REVISION_CONFLICT`; CFP statuses reconcile transactionally.
+- `GET /api/workspaces/:workspaceId/events/:eventId/state/history` lists up to 200 durable revisions.
+- `GET /api/workspaces/:workspaceId/events/:eventId/state/history/:revision` returns a complete historical AppState snapshot.
+- `POST /api/workspaces/:workspaceId/events/:eventId/state/rollback` accepts `{ expectedRevision, targetRevision, reason? }` and restores that snapshot as a new revision.
+- Submission/member/audit routes retain their existing paths. General submission listing is organizer-only; reviewers use the scoped queue.
 
-## Speaker-scoped portal
+Only `BOOTSTRAP_OWNER_ID` plus `BOOTSTRAP_OWNER_EMAIL` may initialize a production workspace. If that exact configured identity reaches an existing workspace whose membership is missing, the Worker repairs its owner membership; no other identity is auto-enrolled.
 
-- `GET /api/workspaces/:workspaceId/events/:eventId/speaker-portal` — an authenticated hosting user whose email matches a speaker in this event. A matching first visit safely claims a `speaker` membership; a nonmatching identity is never enrolled. Returns `{ revision, portal: { event, speaker, submissions, tasks, sessions, resources, assets } }`; it never returns other speakers, reviews, assignments, templates, or private organizer state.
-- `PATCH /api/workspaces/:workspaceId/events/:eventId/speaker-portal` — same identity constraint. Body: `{ expectedRevision, profile?, taskUpdates? }`. Profile accepts only `firstName`, `lastName`, `company`, `jobTitle`, `bio`, `pronouns`, invitation `status`, HTTPS `photoUrl`, and valid availability windows. Task updates accept only the speaker's own task IDs and optionally an R2 `assetId` uploaded by the same authenticated user. Returns the same portal projection with the new revision.
+## Reviewer and speaker scopes
 
-## Scoped reviewer write
+- `GET .../reviewer-queue` returns only assignments matching the authenticated email. Blind rounds redact speaker/source data.
+- `POST .../reviews` accepts only the reviewer's assigned submission with optimistic revision control.
+- `GET|PATCH .../speaker-portal` requires a hosting email matching a speaker in that event. It returns/updates only that speaker, their submissions/tasks/sessions/assets, and approved resource pages/files.
 
-- `GET /api/workspaces/:workspaceId/events/:eventId/reviewer-queue` — reviewer or higher. Returns only assignments matching the authenticated email, their submissions, the referenced rounds/rubrics/instructions, minimal plan labels, and that reviewer's own reviews. Blind rounds redact speaker IDs, speaker records, source payload, and custom answers. General full-state GET is organizer-only.
-- `POST /api/workspaces/:workspaceId/events/:eventId/reviews` — reviewer or higher, additionally requiring the hosting email to match the selected `evaluationAssignment`. Body: `{ expectedRevision, assignmentId, submissionId, review: { scores, note? }, assignmentStatus?, abstain? }`. Only that assignment's review and status/abstain metadata are changed. Cross-reviewer or arbitrary-state writes return `403 REVIEW_ASSIGNMENT_FORBIDDEN`.
+## Assets
 
-## Production integrations
+- `POST .../assets` is available to organizers or a hosting identity matching a speaker in that event. Raw bytes require `X-File-Name` and allowed `Content-Type`; images, PDF, PPT/PPTX, DOC/DOCX, and UTF-8 plain text are signature/content checked. Per-file, user/event, total-event, and count quotas apply.
+- `GET .../assets/:assetId` allows organizers, the uploader, or a matched event speaker reading an asset referenced by an approved speaker resource.
+- `DELETE .../assets/:assetId` requires organizer access.
 
-- `GET /api/workspaces/:workspaceId/events/:eventId/integrations` — organizer or higher. Returns `{ configured: { resend, accelevents }, runs, deliveries }` with the latest durable run and message-delivery logs.
-- `POST /api/workspaces/:workspaceId/events/:eventId/integrations/email/send` — organizer or higher. Body: `{ idempotencyKey, replyTo?, messages: [{ speakerId, subject, text?, html?, attachment?: { filename, content, type: "text/calendar" } }] }`. Calendar attachments must be `.ics`, include `BEGIN:VCALENDAR`, and remain under 200 KB; the Worker safely base64-encodes them for Resend. Recipient addresses are resolved from speakers in the event state, not trusted from the request. Returns `{ runId, status, replayed, result }`. Uses a per-recipient provider idempotency key and durable queued/sent/failed records. Missing `RESEND_API_KEY` or `EMAIL_FROM` returns `503 PROVIDER_NOT_CONFIGURED`.
-- `POST /api/workspaces/:workspaceId/events/:eventId/integrations/accelevents/sync` — organizer or higher. Body: `{ idempotencyKey }`. Sends a one-way event read model containing only accepted submissions, their published sessions, and associated confirmed speakers. Returns `{ runId, status, replayed, result, synced? }`. Missing `ACCELEVENTS_API_URL` or `ACCELEVENTS_API_TOKEN` returns `503 PROVIDER_NOT_CONFIGURED`.
+## Integrations
 
-Both action endpoints uniquely scope idempotency to workspace, event, provider, and key. Retries return the prior durable result without calling the provider again.
+- `GET .../integrations` returns `{ configured, runs, deliveries, mappings }`, including lease attempts and native Accelevents object mappings.
+- `POST .../integrations/email/send` accepts `{ idempotencyKey, replyTo?, messages: [{ speakerId, subject, text?, html?, attachment? }] }`. Resend recipients come from event speakers. An attachment request `{ filename, type: "text/calendar" }` is regenerated server-side from only that speaker's published accepted sessions as an RFC 5545 `METHOD:REQUEST`; applicant/client calendar content is never trusted. Due reminders receive the same scoped invite when sessions exist. Durable recipient rows plus provider keys make recovery resumable.
+- `POST .../integrations/accelevents/sync` accepts `{ idempotencyKey }`. It consumes `state.event.accelevents`, then calls the native host API using the `Key` header and event URL. Speakers are created/updated first; durable remote IDs are attached to created/updated sessions.
 
-Only the production identity configured by `BOOTSTRAP_OWNER_ID` and `BOOTSTRAP_OWNER_EMAIL` may create a nonexistent valid workspace and become its owner. Local tests can opt into first-caller bootstrap with `ALLOW_LOCAL_AUTH=true`. Once the workspace exists, identities without membership receive 403 and are never auto-enrolled.
+Active integrations hold renewable leases. A concurrent duplicate returns `409 INTEGRATION_IN_PROGRESS`; an expired lease can be claimed; terminal retries replay the stored result. Provider calls time out.
 
-## Configuration
+## Reminders and maintenance
 
-- `DB`: required D1 binding.
-- `FILES`: required R2 binding for asset routes.
-- `ALLOWED_ORIGINS`: optional comma-separated cross-origin allowlist; same-origin is always accepted.
-- `CFP_RATE_LIMIT`: submissions per window, default `8`.
-- `CFP_RATE_WINDOW_SECONDS`: fixed window, default `60`.
-- `MAX_ASSET_BYTES`: default `10000000`.
-- `ALLOWED_ASSET_TYPES`: optional comma-separated MIME allowlist.
-- `ALLOW_LOCAL_AUTH`: set to `true` only in local tests to enable `x-openai-user-*` aliases.
-- `BOOTSTRAP_OWNER_ID` and `BOOTSTRAP_OWNER_EMAIL`: required in production; only this trusted hosting identity may create the fixed workspace when it does not exist.
-- `RESEND_API_KEY` and `EMAIL_FROM`: Resend email transport.
-- `ACCELEVENTS_API_URL` and `ACCELEVENTS_API_TOKEN`: Accelevents one-way sync target and bearer token.
+- `GET .../reminders` returns `{ configured, schedules, runs, deliveries }`.
+- `POST .../reminders/run` accepts `{ at?, idempotencyKey? }`, evaluates enabled schedules against incomplete/due tasks, personalizes the enabled template, and delivers through Resend once per schedule/task/cadence bucket. Keys are workspace/event scoped and expired leases allow stale `running` runs to resume.
+- `POST /api/internal/maintenance` requires `Authorization: Bearer $CRON_SECRET`; body `{ at? }`. It performs retention cleanup and due processing for persisted events. It returns `502` for reminder failures and `503` when reminders are due but Resend is unconfigured.
+- The Worker exports `scheduled(controller, env, ctx)` with identical behavior and rejects failed runs for platform observability. `.github/workflows/maintenance.yml` is the portable 15-minute HTTP fallback.
+
+## Runtime configuration
+
+- Core: `DB`, `FILES`, `ALLOWED_ORIGINS`, `ALLOW_LOCAL_AUTH`, `BOOTSTRAP_OWNER_ID`, `BOOTSTRAP_OWNER_EMAIL`.
+- CFP: `CFP_RATE_LIMIT`, `CFP_RATE_WINDOW_SECONDS`.
+- Assets: `MAX_ASSET_BYTES` (10 MB), `MAX_USER_EVENT_ASSET_BYTES` (50 MB), `MAX_EVENT_ASSET_BYTES` (250 MB), `MAX_EVENT_ASSET_COUNT` (2000), `ALLOWED_ASSET_TYPES`.
+- Email: `RESEND_API_KEY`, `EMAIL_FROM`.
+- Accelevents: `ACCELEVENTS_API_KEY`, `ACCELEVENTS_EVENT_URL` (slug), optional HTTPS `ACCELEVENTS_API_BASE_URL` (defaults to `https://api.accelevents.com`).
+- Operations: `PROVIDER_TIMEOUT_MS`, `INTEGRATION_LEASE_MS`, `AUTOMATION_LEASE_SECONDS`, `CRON_SECRET`, `CFP_RETENTION_DAYS`, `INTEGRATION_RETENTION_DAYS`, `AUDIT_RETENTION_DAYS`, `AUTOMATION_RETENTION_DAYS`, `RATE_LIMIT_RETENTION_DAYS`.
+
+See `db/operations.md` for backup, restore, retention, and monitoring guidance.

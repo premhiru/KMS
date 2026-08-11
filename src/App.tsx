@@ -115,6 +115,7 @@ export default function App() {
   }
 
   return <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+    <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById('main-content')?.focus() }}>Skip to main content</a>
     {sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
     <aside className={`shell-sidebar ${sidebarOpen ? 'mobile-open' : ''}`}>
       <div className="shell-brand">
@@ -155,7 +156,7 @@ export default function App() {
           <button className="button primary compact" onClick={() => go('event')}><Globe2 size={16} /> Public event</button>
         </div>
       </header>
-      <main className="shell-content">
+      <main className="shell-content" id="main-content" tabIndex={-1}>
         {syncStatus === 'saving' && <div className="sync-banner saving" role="status">Saving to the shared workspace…</div>}
         {route === 'dashboard' && <Dashboard onNavigate={go} />}
         {route === 'submissions' && <OrganizerSubmissions onOpenReview={(submissionId) => { setReviewSubmissionId(submissionId); go('reviews') }} />}

@@ -82,7 +82,7 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
       </div>
 
       <div className="sb-split">
-        <div className="sb-list" role="list" aria-label="Submissions">
+        <div className="sb-list" aria-label="Submissions">
           {rows.length === 0 && <div className="sb-empty"><Search aria-hidden="true" /><h2>No matching submissions</h2><p>Try changing the search or filters.</p></div>}
           {rows.map((submission) => {
             const speakers = selectSubmissionSpeakers(state, submission.id)
@@ -90,7 +90,6 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
             return (
               <button
                 type="button"
-                role="listitem"
                 key={submission.id}
                 className={`sb-submission-row${submission.id === selectedId ? ' is-selected' : ''}`}
                 onClick={() => setSelectedId(submission.id)}
@@ -98,7 +97,7 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
               >
                 <span className="sb-submission-row__main">
                   <strong>{submission.title}</strong>
-                  <small>{speakers.map((speaker) => `${speaker.firstName} ${speaker.lastName}`).join(', ') || 'No speaker'} · {submission.track}</small>
+                  <small>{speakers.map((speaker) => `${speaker.firstName} ${speaker.lastName}`).join(', ') || 'No speaker'} · {submission.track} · {submission.origin ?? 'cfp'}{submission.cfpVersion ? ` v${submission.cfpVersion}` : ''}</small>
                 </span>
                 <span className="sb-submission-row__meta">
                   <span className={`sb-badge sb-badge--${submission.status}`}>{statusLabels[submission.status]}</span>
@@ -191,6 +190,8 @@ function SubmissionEditor({ submission, tracks, speakers, reviewCount, score, on
           <span key={speaker.id}>{speaker.firstName} {speaker.lastName} <small>{speaker.email}</small></span>
         ))}
       </div>
+
+      <p className="sb-submission-provenance"><strong>Source:</strong> {submission.origin ?? 'CFP'}{submission.cfpVersion ? ` · published form v${submission.cfpVersion}` : ''}{submission.invitedAt ? ` · invited ${new Date(submission.invitedAt).toLocaleDateString()}` : ''}</p>
 
       <form className="sb-form" onSubmit={submit}>
         <label>Session title<input required value={title} onChange={(event) => setTitle(event.target.value)} /></label>

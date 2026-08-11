@@ -1,4 +1,4 @@
-import type { AppState, AvailabilityWindow, EvaluationAssignment, EvaluationAssignmentStatus, EvaluationRoundStatus, EventConfig, Id, OnboardingTask, Review, RubricCriterion, Session, Speaker, Submission, SubmissionStatus } from '../domain'
+import type { AppState, AvailabilityWindow, EvaluationAssignment, EvaluationAssignmentStatus, EvaluationRoundStatus, EventConfig, Id, OnboardingTask, ReminderSchedule, Review, RubricCriterion, Session, Speaker, Submission, SubmissionStatus } from '../domain'
 
 export type WorkspaceRole = 'owner' | 'organizer' | 'reviewer' | 'speaker'
 
@@ -30,6 +30,43 @@ export interface VersionedAppState {
   event: EventRecord
   state: AppState
   revision: number
+  updatedAt: string
+}
+
+export interface StateHistoryRevision {
+  revision: number
+  updatedBy: Id
+  createdAt: string
+  reason: string
+  sizeBytes: number
+}
+
+export interface StateHistory {
+  eventId: Id
+  currentRevision: number
+  revisions: StateHistoryRevision[]
+}
+
+export interface StateRevisionDetail {
+  eventId: Id
+  revision: number
+  state: AppState
+  updatedBy: Id
+  createdAt: string
+  reason: string
+}
+
+export interface StateRollbackInput {
+  expectedRevision: number
+  targetRevision: number
+  reason?: string
+}
+
+export interface StateRollbackReceipt {
+  eventId: Id
+  revision: number
+  rolledBackFrom: number
+  targetRevision: number
   updatedAt: string
 }
 
@@ -177,6 +214,15 @@ export interface IntegrationRun {
   startedBy: Id
   createdAt: string
   completedAt?: string
+  leaseExpiresAt?: string
+  attemptCount?: number
+}
+
+export interface IntegrationObjectMapping {
+  objectType: 'speaker' | 'session'
+  localId: Id
+  remoteId: string
+  updatedAt: string
 }
 
 export interface MessageDelivery {
@@ -197,9 +243,56 @@ export interface IntegrationStatus {
   configured: { resend: boolean; accelevents: boolean }
   runs: IntegrationRun[]
   deliveries: MessageDelivery[]
+  mappings: IntegrationObjectMapping[]
 }
 
 export type IntegrationLogs = Pick<IntegrationStatus, 'runs' | 'deliveries'>
+
+export type AutomationRunStatus = 'running' | 'succeeded' | 'partial' | 'failed'
+
+export interface ReminderAutomationRun {
+  id: Id
+  idempotencyKey: string
+  status: AutomationRunStatus
+  result: Record<string, unknown>
+  errorMessage?: string
+  startedBy: string
+  createdAt: string
+  completedAt?: string
+}
+
+export interface ReminderDelivery {
+  id: Id
+  runId: Id
+  scheduleId: Id
+  taskId: Id
+  speakerId: Id
+  recipientEmail: string
+  status: 'queued' | 'sent' | 'failed'
+  providerMessageId?: string
+  errorMessage?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ReminderAutomationStatus {
+  configured: boolean
+  schedules: ReminderSchedule[]
+  runs: ReminderAutomationRun[]
+  deliveries: ReminderDelivery[]
+}
+
+export interface RunRemindersInput {
+  at?: string
+  idempotencyKey?: string
+}
+
+export interface RunRemindersReceipt {
+  runId: Id
+  status: AutomationRunStatus
+  replayed: boolean
+  result: Record<string, unknown>
+}
 
 export interface EmailMessageInput {
   speakerId: Id
@@ -257,6 +350,23 @@ export interface SpeakerPortalResource {
   description?: string
   url?: string
   type?: string
+  version?: number
+  approvalStatus?: 'approved'
+  updatedAt?: string
+  files: SpeakerPortalResourceFile[]
+}
+
+export interface SpeakerPortalResourceFile {
+  id: Id
+  name: string
+  assetId?: Id
+  url?: string
+  contentType: string
+  size: number
+  version: number
+  approvalStatus: 'approved'
+  uploadedAt: string
+  approvedAt?: string
 }
 
 export interface SpeakerPortalAsset {

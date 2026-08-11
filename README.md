@@ -46,10 +46,12 @@ Open `http://localhost:5173`.
 npm test
 npm run lint
 npm run build
+npx playwright install chromium
+npm run test:e2e
 npm audit --omit=dev
 ```
 
-The suite covers domain invariants, evaluation rounds, API transport, D1/R2 lifecycle contracts, tenant/RBAC boundaries, CFP enforcement, blind review isolation, optimistic concurrency, provider idempotency, and Resend calendar payloads.
+The suite covers domain invariants, evaluation rounds, API transport, D1/R2 lifecycle contracts, tenant/RBAC boundaries, CFP enforcement, blind review isolation, optimistic concurrency, provider idempotency, and Resend calendar payloads. Playwright release tests exercise organizer, anonymous CFP, reviewer, speaker, and public-attendee workflows against a deterministic remote API stub, including accessibility, mobile layout, hydration failure, and revision-rebase scenarios.
 
 ## Production configuration
 
@@ -61,7 +63,8 @@ Required bindings are declared in `.openai/hosting.json`:
 Optional runtime configuration:
 
 - `RESEND_API_KEY` and `EMAIL_FROM` — external email/calendar delivery
-- `ACCELEVENTS_API_URL` and `ACCELEVENTS_API_TOKEN` — one-way program sync
+- `ACCELEVENTS_API_KEY` and `ACCELEVENTS_EVENT_URL` — native one-way program sync
+- `CRON_SECRET` — authenticated maintenance/reminder fallback trigger
 - `ALLOWED_ORIGINS` — additional trusted cross-origin clients
 - `CFP_RATE_LIMIT`, `CFP_RATE_WINDOW_SECONDS`, `MAX_ASSET_BYTES`, and `ALLOWED_ASSET_TYPES` — operational limits
 

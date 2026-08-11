@@ -119,10 +119,10 @@ export function ReviewWorkspace({
           <div className="sb-review-layout">
             <aside className="sb-review-queue" aria-label="Assigned proposal review queue">
               <label className="sb-search"><span className="sb-sr-only">Search assigned review queue</span><Search aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search assigned queue" /></label>
-              <div role="list">
+              <div>
                 {rows.map((item) => {
                   const score = selectRoundSubmissionScore(state, item.round.id, item.submission.id)
-                  return <button type="button" role="listitem" key={item.assignment.id} className={`sb-review-queue__item${item.assignment.id === selected?.assignment.id ? ' is-selected' : ''}`} onClick={() => setSelectedAssignmentId(item.assignment.id)} aria-current={item.assignment.id === selected?.assignment.id ? 'true' : undefined}><span><strong>{item.submission.title}</strong><small>{item.round.name} · {item.assignment.status}</small></span><span className="sb-review-queue__score">{score === undefined ? '—' : score.toFixed(1)}</span></button>
+                  return <button type="button" key={item.assignment.id} className={`sb-review-queue__item${item.assignment.id === selected?.assignment.id ? ' is-selected' : ''}`} onClick={() => setSelectedAssignmentId(item.assignment.id)} aria-pressed={item.assignment.id === selected?.assignment.id}><span><strong>{item.submission.title}</strong><small>{item.round.name} · {item.assignment.status}</small></span><span className="sb-review-queue__score">{score === undefined ? '—' : score.toFixed(1)}</span></button>
                 })}
                 {rows.length === 0 && <p className="sb-muted">No assignments match this reviewer and round.</p>}
               </div>

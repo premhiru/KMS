@@ -1,2 +1,6 @@
 .portal-resources iframe{width:100%;min-height:280px;border:1px solid #e5e3eb;border-radius:10px;margin-top:12px;background:#fff}
 .portal-resources .portal-safe-preview{padding:10px 0;color:#595665;font-size:12px;line-height:1.6}
+
+.portal-welcome .portal-kicker{color:#4d419e}.portal-welcome h1{color:#24222d}.portal-welcome p:not(.portal-kicker),.portal-completion span{color:#5f5b69}.portal-card-heading>span,.portal-form label small,.portal-task-main small,.portal-upload p span{color:#5f5b69}.portal-storage-note{color:#55515f}.portal-resource-files{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.portal-resource-files button{align-items:flex-start;display:flex;flex-direction:column;gap:3px;text-align:left}.portal-resource-files button span{color:#55515f;font-size:9px}.portal-resources summary small{color:#585463}
+.portal-welcome{background:#fff;border:1px solid #e1dee8;border-radius:12px;padding:16px}.portal-completion strong{color:#24222d}
+.portal-preview-fieldset{border:0;margin:0;min-inline-size:0;padding:0}

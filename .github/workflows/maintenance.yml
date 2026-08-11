@@ -1,0 +1,30 @@
+name: Production maintenance
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openspeaker-production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Process due reminders and retention
+        env:
+          CRON_SECRET: ${{ secrets.OPENSPEAKER_CRON_SECRET }}
+        run: |
+          test -n "$CRON_SECRET"
+          curl --fail-with-body --retry 2 --retry-all-errors \
+            --request POST \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            --header "Content-Type: application/json" \
+            --data '{}' \
+            https://openspeaker-kms.premhiru.chatgpt.site/api/internal/maintenance

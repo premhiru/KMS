@@ -12,6 +12,28 @@
   color: var(--sb-ink);
 }
 
+/* Production workflow additions and WCAG AA contrast overrides. */
+.sb-feature__header .sb-eyebrow { color: #4636a5 !important; }
+.sb-feature__header h1,
+#review-workspace-title { color: #211f2b; }
+.sb-feature__header > div > p:not(.sb-eyebrow) { color: #565360; }
+.sb-submission-row.is-selected .sb-submission-row__main small,
+.sb-review-queue__item.is-selected small { color: #514d5b; }
+.sb-button--warning { background: #fff0df; border-color: #c88943; color: #70420e; }
+.sb-button--danger { background: #fae4e6; border-color: #c87078; color: #7c2029; }
+.sb-feature__header { background: #fff; border: 1px solid #e3e0e9; border-radius: 12px; padding: 16px; }
+.sb-submission-provenance,
+.sb-version-note { color: #565260; font-size: .72rem; line-height: 1.5; }
+.sb-format-list,
+.sb-routing-list { display: grid; gap: 10px; margin-top: 12px; }
+.sb-format-list > div,
+.sb-routing-list > div { align-items: end; background: #f8f7fb; border: 1px solid var(--sb-line); border-radius: 9px; display: grid; gap: 10px; grid-template-columns: minmax(140px, 1fr) 120px auto; padding: 11px; }
+.sb-routing-list > div { grid-template-columns: minmax(130px, .7fr) minmax(160px, 1fr) minmax(130px, .8fr) auto; }
+@media (max-width: 720px) {
+  .sb-format-list > div,
+  .sb-routing-list > div { grid-template-columns: 1fr; }
+}
+
 .sb-feature {
   max-width: 1480px;
   margin: 0 auto;
@@ -726,3 +748,13 @@
   .sb-rubric-row label:first-child { grid-column: 1 / -1; }
   .sb-assignment-table > div { grid-template-columns: 1fr auto; }
 }
+
+/* Final contrast overrides must follow legacy component rules. */
+.sb-feature__header .sb-eyebrow { color: #4636a5 !important; }
+.sb-feature__header h1,
+#review-workspace-title { color: #211f2b; }
+.sb-feature__header > div > p:not(.sb-eyebrow) { color: #565360; }
+.sb-submission-row.is-selected .sb-submission-row__main small,
+.sb-review-queue__item.is-selected small { color: #514d5b; }
+.sb-button--warning { background: #fff0df; border-color: #c88943; color: #70420e; }
+.sb-button--danger { background: #fae4e6; border-color: #c87078; color: #7c2029; }

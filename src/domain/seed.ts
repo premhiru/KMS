@@ -32,6 +32,7 @@ const tasks: OnboardingTask[] = speakers.flatMap((speaker, speakerIndex) => {
     ['headshot', 'Upload headshot', '2026-08-25T23:59:00.000Z'],
     ['session-details', 'Confirm session details', '2026-09-01T23:59:00.000Z'],
     ['slides', 'Upload presentation slides', '2026-09-10T23:59:00.000Z'],
+    ['supporting-document', 'Upload supporting document', '2026-09-10T23:59:00.000Z'],
   ]
   return definitions.map(([kind, title, dueAt], taskIndex) => ({
     id: `task-${speaker.id}-${kind}`,
@@ -67,6 +68,15 @@ export function createSeedState(): AppState {
         allowMultiple: true,
         welcomeMessage: 'Share the practical lessons, tools, and hard-won insights our AI engineering community can use.',
         thankYouMessage: 'Thanks for submitting. You can track your proposal and complete speaker details in the portal.',
+        version: 1,
+        publishedAt: SEEDED_AT,
+        formats: [{ name: 'Talk', durationMinutes: 30 }, { name: 'Workshop', durationMinutes: 60 }, { name: 'Panel', durationMinutes: 45 }, { name: 'Lightning talk', durationMinutes: 10 }],
+        routingRules: [
+          { id: 'route-case-study', category: 'case-study', label: 'Practical case study', track: 'Applied AI', enabled: true },
+          { id: 'route-open-source', category: 'open-source', label: 'Open-source project', track: 'Developer tools', enabled: true },
+          { id: 'route-research', category: 'research', label: 'Research & evaluation', track: 'Evaluation', enabled: true },
+          { id: 'route-leadership', category: 'leadership', label: 'Leadership & strategy', track: 'Product & design', enabled: true },
+        ],
         questions: [
           { id: 'question-outcomes', label: 'What will attendees learn?', type: 'textarea', required: true },
           { id: 'question-workshop', label: 'What should attendees install before this workshop?', type: 'textarea', required: true, showWhen: { field: 'format', equals: 'Workshop' } },
@@ -74,14 +84,17 @@ export function createSeedState(): AppState {
         ],
       },
       resources: [
-        { id: 'resource-handbook', title: 'Speaker handbook', body: 'Deadlines, production guidance, venue access, and day-of-event contacts.' },
-        { id: 'resource-av', title: 'AV and slide guidelines', body: 'Use 16:9 slides, embed fonts, and bring a local backup.' },
-        { id: 'resource-venue', title: 'Venue and travel', body: 'Moscone West, San Francisco. Speaker check-in opens at 7:30 AM.' },
+        { id: 'resource-handbook', title: 'Speaker handbook', body: 'Deadlines, production guidance, venue access, and day-of-event contacts.', version: 1, approvalStatus: 'approved', updatedAt: SEEDED_AT, files: [] },
+        { id: 'resource-av', title: 'AV and slide guidelines', body: 'Use 16:9 slides, embed fonts, and bring a local backup.', version: 1, approvalStatus: 'approved', updatedAt: SEEDED_AT, files: [] },
+        { id: 'resource-venue', title: 'Venue and travel', body: 'Moscone West, San Francisco. Speaker check-in opens at 7:30 AM.', version: 1, approvalStatus: 'approved', updatedAt: SEEDED_AT, files: [] },
       ],
+      reminderSchedules: [{ id: 'reminder-onboarding', name: 'Upcoming onboarding deadlines', templateId: 'template-onboarding', audience: 'incomplete-onboarding', enabled: false, cadence: 'daily', daysBeforeDue: 3, timezone: 'America/Los_Angeles', createdAt: SEEDED_AT, updatedAt: SEEDED_AT }],
+      publicProgram: { defaultView: 'day', enabledViews: ['list', 'day', 'week', 'track', 'room'], showSpeakers: true, showItinerary: true, showCalendarDownloads: true, embedHeight: 720 },
+      accelevents: { sessionTitle: 'title', description: 'abstract', track: 'track', type: 'format', location: 'room', speakers: 'speakers', includeOnlyConfirmedSpeakers: true, includeOnlyPublishedSessions: true, destinationFields: { title: 'Session Name', description: 'Description', track: 'Track', type: 'Type', location: 'Location', speakers: 'Speakers' }, lastStatus: 'idle' },
     },
     speakers: structuredClone(speakers),
     submissions: [
-      { id: 'submission-agents', title: 'Beyond the chatbot: building reliable AI agents', abstract: 'Patterns for planning, tools, memory, and graceful recovery in production agent systems.', track: 'Agents & orchestration', format: 'Talk', durationMinutes: 30, speakerIds: ['speaker-maya'], status: 'accepted', tags: ['agents', 'reliability'], createdAt: '2026-07-01T09:00:00.000Z', updatedAt: SEEDED_AT },
+      { id: 'submission-agents', title: 'Beyond the chatbot: building reliable AI agents', abstract: 'Patterns for planning, tools, memory, and graceful recovery in production agent systems.', track: 'Agents & orchestration', format: 'Talk', durationMinutes: 30, speakerIds: ['speaker-maya'], status: 'accepted', tags: ['agents', 'reliability'], origin: 'cfp', cfpVersion: 1, createdAt: '2026-07-01T09:00:00.000Z', updatedAt: SEEDED_AT },
       { id: 'submission-evals', title: 'Evaluating LLM systems in production', abstract: 'A practical evaluation stack spanning offline test sets, traces, and human review.', track: 'Evaluation', format: 'Talk', durationMinutes: 30, speakerIds: ['speaker-owen'], status: 'accepted', tags: ['evaluation'], createdAt: '2026-07-02T09:00:00.000Z', updatedAt: SEEDED_AT },
       { id: 'submission-edge', title: 'Small models, big impact: edge AI in practice', abstract: 'Case studies and constraints for useful models running close to users.', track: 'Applied AI', format: 'Talk', durationMinutes: 20, speakerIds: ['speaker-priya'], status: 'in-review', tags: ['edge'], createdAt: '2026-07-03T09:00:00.000Z', updatedAt: SEEDED_AT },
       { id: 'submission-inference', title: 'The open-source inference stack', abstract: 'A guided tour of modern inference servers, kernels, and observability.', track: 'Infrastructure', format: 'Panel', durationMinutes: 45, speakerIds: ['speaker-jon'], status: 'waitlisted', tags: ['open-source', 'inference'], createdAt: '2026-07-04T09:00:00.000Z', updatedAt: SEEDED_AT },

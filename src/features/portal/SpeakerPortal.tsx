@@ -114,7 +114,12 @@ function UploadControl({ task, announce }: { task: OnboardingTask; announce: (me
   const { dispatch, persistenceMode, uploadAsset, downloadAsset } = useApp()
   const [uploading, setUploading] = useState(false)
   const isHeadshot = task.kind === 'headshot'
-  const accept = isHeadshot ? 'image/jpeg,image/png,image/webp' : '.pdf,.ppt,.pptx,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  const isSlides = task.kind === 'slides'
+  const accept = isHeadshot
+    ? 'image/jpeg,image/png,image/webp'
+    : isSlides
+      ? '.pdf,.ppt,.pptx,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      : '.pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain'
   const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -157,7 +162,7 @@ function UploadControl({ task, announce }: { task: OnboardingTask; announce: (me
 
   return (
     <div className="portal-upload">
-      {task.asset && <p><strong>{task.asset.name}</strong><span>{formatBytes(task.asset.size)} · {task.asset.type} · {task.asset.storage === 'r2' ? 'stored securely' : 'selected'} {formatDate(task.asset.selectedAt)}</span></p>}
+      {task.asset && <p><strong>{task.asset.name}</strong><span>{formatBytes(task.asset.size)} · {task.asset.type} · v{task.assetVersion ?? 1} · {task.approvalStatus ?? 'pending review'} · {task.asset.storage === 'r2' ? 'stored securely' : 'selected'} {formatDate(task.asset.selectedAt)}</span>{task.reviewerNote && <span>Organizer note: {task.reviewerNote}</span>}</p>}
       {task.asset?.id && <button className="portal-button portal-button-secondary" type="button" onClick={download}>Download</button>}
       <label className="portal-button portal-button-secondary">
         <span>{uploading ? 'Uploading…' : task.asset ? 'Choose a different file' : 'Choose file'}</span>
@@ -186,7 +191,7 @@ function OnboardingChecklist({ speaker, announce }: { speaker: Speaker; announce
       <progress className="portal-progress" value={completion} max="100">{completion}%</progress>
       <ul className="portal-task-list">
         {tasks.map((task) => {
-          const hasUpload = task.kind === 'headshot' || task.kind === 'slides'
+          const hasUpload = task.kind === 'headshot' || task.kind === 'slides' || task.kind === 'supporting-document'
           const inputId = `portal-task-${task.id}`
           return (
             <li key={task.id} className={task.completedAt ? 'is-complete' : ''}>
@@ -213,8 +218,8 @@ function StorageNotice() {
 }
 
 function Resources() {
-  const state = useAppState()
-  const resources = state.event.resources ?? []
+  const { state, downloadAsset } = useApp()
+  const resources = (state.event.resources ?? []).filter((resource) => !resource.approvalStatus || resource.approvalStatus === 'approved')
   const safeEmbedUrl = (value?: string) => {
     if (!value) return undefined
     try {
@@ -224,11 +229,20 @@ function Resources() {
       return undefined
     }
   }
+  const downloadFile = async (assetId: string, name: string) => {
+    const result = await downloadAsset(assetId)
+    const href = URL.createObjectURL(result.blob)
+    const anchor = document.createElement('a')
+    anchor.href = href
+    anchor.download = name || result.fileName
+    anchor.click()
+    URL.revokeObjectURL(href)
+  }
   return (
     <section className="portal-card portal-resources" aria-labelledby="portal-resources-heading">
       <div className="portal-card-heading"><div><p className="portal-kicker">Speaker wiki</p><h2 id="portal-resources-heading">Event resources</h2></div></div>
       {resources.length === 0 && <p className="portal-storage-note">No resources have been published for this event.</p>}
-      {resources.map((resource) => { const embedUrl = safeEmbedUrl(resource.embedUrl); return <details key={resource.id}><summary>{resource.title}</summary><div className="portal-safe-preview" dangerouslySetInnerHTML={{ __html: sanitizeHtml(resource.body) }} />{embedUrl && <iframe title={`${resource.title} embedded resource`} src={embedUrl} sandbox="allow-scripts allow-popups allow-presentation" loading="lazy" referrerPolicy="no-referrer" />}</details> })}
+      {resources.map((resource) => { const embedUrl = safeEmbedUrl(resource.embedUrl); const files = (resource.files ?? []).filter((file) => file.approvalStatus === 'approved'); return <details key={resource.id}><summary>{resource.title} <small>v{resource.version ?? 1}</small></summary><div className="portal-safe-preview" dangerouslySetInnerHTML={{ __html: sanitizeHtml(resource.body) }} />{files.length > 0 && <div className="portal-resource-files">{files.map((file) => <button className="portal-button portal-button-secondary" type="button" key={file.id} disabled={!file.assetId && !file.url} onClick={() => file.assetId ? void downloadFile(file.assetId, file.name) : window.open(file.url, '_blank', 'noopener,noreferrer')}><strong>{file.name}</strong><span>v{file.version} · {formatBytes(file.size)}</span></button>)}</div>}{embedUrl && <iframe title={`${resource.title} embedded resource`} src={embedUrl} sandbox="allow-scripts allow-popups allow-presentation" loading="lazy" referrerPolicy="no-referrer" />}</details> })}
     </section>
   )
 }
@@ -255,15 +269,16 @@ function PortalWorkspace({ speaker }: { speaker: Speaker }) {
 
 export function SpeakerPortal() {
   const { state, session } = useApp()
+  const preview = session?.role !== 'speaker'
   const [speakerId, setSpeakerId] = useState(state.speakers[0]?.id ?? '')
   const speaker = state.speakers.find((item) => item.id === speakerId) ?? state.speakers[0]
   return (
     <div className="participant-portal">
-      {session?.role !== 'speaker' && <div className="portal-demo-switcher">
-        <div><strong>Participant portal demo</strong><span>Choose a speaker to simulate their private sign-in.</span></div>
+      {preview && <div className="portal-demo-switcher">
+        <div><strong>Read-only participant preview</strong><span>Choose a speaker to inspect their portal. Sign in as that speaker to make changes.</span></div>
         <label>Signed in as<select value={speaker?.id ?? ''} onChange={(event) => setSpeakerId(event.target.value)}>{state.speakers.map((item) => <option key={item.id} value={item.id}>{speakerName(item)} · {item.email}</option>)}</select></label>
       </div>}
-      {speaker ? <PortalWorkspace key={speaker.id} speaker={speaker} /> : <div className="portal-card"><h1>No speakers yet</h1><p>An organizer must add a speaker before the portal can be previewed.</p></div>}
+      {speaker ? <fieldset className="portal-preview-fieldset" disabled={preview} aria-label={preview ? 'Read-only participant portal preview' : undefined}><PortalWorkspace key={speaker.id} speaker={speaker} /></fieldset> : <div className="portal-card"><h1>No speakers yet</h1><p>An organizer must add a speaker before the portal can be previewed.</p></div>}
     </div>
   )
 }
