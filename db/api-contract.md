@@ -20,7 +20,7 @@ Responses use `{ "data": ... }` or `{ "error": { "code", "message", "details?", 
 - `POST /api/workspaces/:workspaceId/events/:eventId/state/rollback` accepts `{ expectedRevision, targetRevision, reason? }` and restores that snapshot as a new revision.
 - Submission/member/audit routes retain their existing paths. General submission listing is organizer-only; reviewers use the scoped queue.
 
-Only `BOOTSTRAP_OWNER_ID` plus `BOOTSTRAP_OWNER_EMAIL` may initialize a production workspace. If that exact configured identity reaches an existing workspace whose membership is missing, the Worker repairs its owner membership; no other identity is auto-enrolled.
+Only the exact `BOOTSTRAP_OWNER_EMAIL` may initialize a production workspace or repair its missing owner membership. The email comes from trusted Sites forwarding headers and is the canonical identity because access-account IDs and forwarded user IDs can use different namespaces. `BOOTSTRAP_OWNER_ID` is optional metadata and is not an authorization match; no other email is auto-enrolled.
 
 ## Reviewer and speaker scopes
 
@@ -51,7 +51,7 @@ Active integrations hold renewable leases. A concurrent duplicate returns `409 I
 
 ## Runtime configuration
 
-- Core: `DB`, `FILES`, `ALLOWED_ORIGINS`, `ALLOW_LOCAL_AUTH`, `BOOTSTRAP_OWNER_ID`, `BOOTSTRAP_OWNER_EMAIL`.
+- Core: `DB`, `FILES`, `ALLOWED_ORIGINS`, `ALLOW_LOCAL_AUTH`, canonical `BOOTSTRAP_OWNER_EMAIL`, optional informational `BOOTSTRAP_OWNER_ID`.
 - CFP: `CFP_RATE_LIMIT`, `CFP_RATE_WINDOW_SECONDS`.
 - Assets: `MAX_ASSET_BYTES` (10 MB), `MAX_USER_EVENT_ASSET_BYTES` (50 MB), `MAX_EVENT_ASSET_BYTES` (250 MB), `MAX_EVENT_ASSET_COUNT` (2000), `ALLOWED_ASSET_TYPES`.
 - Email: `RESEND_API_KEY`, `EMAIL_FROM`.

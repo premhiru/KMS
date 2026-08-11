@@ -549,14 +549,28 @@ describe('D1 initialization', () => {
     DB.database.close()
   })
 
+  it('bootstraps the configured forwarded email when the access-account ID namespace differs', async () => {
+    const DB = new D1Mock()
+    const env = { DB, BOOTSTRAP_OWNER_EMAIL: 'configured@example.com', BOOTSTRAP_OWNER_ID: 'access-account-id-that-is-not-forwarded' }
+    const state = validAppState('event-email-bootstrap', { event: { name: 'Email Bootstrap', slug: 'email-bootstrap' } })
+    const response = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-email-bootstrap/events/event-email-bootstrap/state', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'oai-authenticated-user-id': 'forwarded-user-namespace-id', 'oai-authenticated-user-email': 'CONFIGURED@example.com' },
+      body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }),
+    }), env)
+    expect(response.status).toBe(201)
+    expect(DB.database.prepare(`SELECT role FROM memberships WHERE workspace_id=? AND user_id=?`).get('workspace-email-bootstrap', 'forwarded-user-namespace-id')).toEqual({ role: 'owner' })
+    DB.database.close()
+  })
+
   it('repairs only the exact configured owner membership on an existing workspace', async () => {
     const DB = new D1Mock()
     await fetchHandler(new Request('https://app.test/api/health'), { DB })
     DB.database.prepare(`INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)`).run('workspace-repair', 'Repair workspace', '2026-01-01T00:00:00.000Z')
-    const env = { DB, BOOTSTRAP_OWNER_ID: 'configured-owner', BOOTSTRAP_OWNER_EMAIL: 'configured@example.com' }
-    const owner = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-repair/session', { headers: { 'oai-authenticated-user-id': 'configured-owner', 'oai-authenticated-user-email': 'configured@example.com' } }), env)
+    const env = { DB, BOOTSTRAP_OWNER_ID: 'access-account-owner-id', BOOTSTRAP_OWNER_EMAIL: 'configured@example.com' }
+    const owner = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-repair/session', { headers: { 'oai-authenticated-user-id': 'forwarded-owner-id', 'oai-authenticated-user-email': 'configured@example.com' } }), env)
     expect(owner.status).toBe(200)
-    expect(await owner.json()).toMatchObject({ data: { role: 'owner', user: { id: 'configured-owner', email: 'configured@example.com' } } })
+    expect(await owner.json()).toMatchObject({ data: { role: 'owner', user: { id: 'forwarded-owner-id', email: 'configured@example.com' } } })
     const stranger = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-repair/session', { headers: { 'oai-authenticated-user-id': 'stranger-user', 'oai-authenticated-user-email': 'stranger@example.com' } }), env)
     expect(stranger.status).toBe(403)
     DB.database.close()

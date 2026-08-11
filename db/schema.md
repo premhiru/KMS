@@ -2,7 +2,7 @@
 
 The packaged migrations are `drizzle/0001_initial.sql`, `0002_integrations.sql`, `0003_operations.sql`, and `0004_automation_scopes.sql`. Runtime initialization executes one prepared statement per table/index and records each version in `schema_migrations`.
 
-`workspaces` and `memberships` are the tenant boundary. Production bootstrap is restricted to the configured owner identity. Every event, submission, asset, integration, automation, and audit query is workspace/event scoped.
+`workspaces` and `memberships` are the tenant boundary. Production bootstrap and missing-owner repair are restricted to the exact configured owner email received through trusted Sites forwarding; forwarded IDs are persisted for attribution but are not compared with access-account IDs from another namespace. Every event, submission, asset, integration, automation, and audit query is workspace/event scoped.
 
 `event_states` stores the validated AppState JSON with an optimistic monotonic revision. `event_state_history` stores committed snapshots, actor, timestamp, and reason. Rollback copies a snapshot to a new revision rather than rewinding history. Normalized `public_submissions` are imported idempotently by source ID and their statuses reconcile in both directions.
 

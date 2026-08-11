@@ -411,10 +411,9 @@ async function identityAndMembership(request, env, workspaceId, minimumRole = 's
   await env.DB.prepare(`INSERT INTO users (id,email,name,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET email=excluded.email,name=excluded.name,updated_at=excluded.updated_at`).bind(user.id, user.email, user.name, timestamp, timestamp).run()
   const workspace = await env.DB.prepare(`SELECT id FROM workspaces WHERE id=?`).bind(workspaceId).first()
   if (!workspace) {
-    const bootstrapId = String(env.BOOTSTRAP_OWNER_ID || '')
     const bootstrapEmail = String(env.BOOTSTRAP_OWNER_EMAIL || '').trim().toLowerCase()
     const localBootstrap = env.ALLOW_LOCAL_AUTH === 'true'
-    if (!localBootstrap && (!bootstrapId || !bootstrapEmail || user.id !== bootstrapId || user.email !== bootstrapEmail)) {
+    if (!localBootstrap && (!bootstrapEmail || user.email !== bootstrapEmail)) {
       throw new ApiError(403, 'WORKSPACE_NOT_INITIALIZED', 'This workspace must be initialized by its configured bootstrap owner.')
     }
     await env.DB.batch([
@@ -424,9 +423,8 @@ async function identityAndMembership(request, env, workspaceId, minimumRole = 's
   }
   let membership = await env.DB.prepare(`SELECT role FROM memberships WHERE workspace_id=? AND user_id=?`).bind(workspaceId, user.id).first()
   if (!membership) {
-    const configuredOwnerId = String(env.BOOTSTRAP_OWNER_ID || '')
     const configuredOwnerEmail = String(env.BOOTSTRAP_OWNER_EMAIL || '').trim().toLowerCase()
-    if (configuredOwnerId && configuredOwnerEmail && user.id === configuredOwnerId && user.email === configuredOwnerEmail) {
+    if (configuredOwnerEmail && user.email === configuredOwnerEmail) {
       await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) VALUES (?,?,'owner',?)`).bind(workspaceId, user.id, timestamp).run()
       membership = await env.DB.prepare(`SELECT role FROM memberships WHERE workspace_id=? AND user_id=?`).bind(workspaceId, user.id).first()
     }
