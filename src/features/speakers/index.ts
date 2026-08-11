@@ -1,0 +1,1 @@
+export { OrganizerSpeakers } from './OrganizerSpeakers'
