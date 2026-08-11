@@ -234,12 +234,12 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
             <div className="sb-category-grid" role="radiogroup" aria-label="Proposal category">
               {categories.map((category) => <label key={category.value} className={proposal.category === category.value ? 'is-selected' : ''}><input type="radio" name="category" checked={proposal.category === category.value} onChange={() => routeCategory(category.value)} /><Route aria-hidden="true" /><strong>{category.label}</strong><small>Routes to {category.trackHints[0]}</small></label>)}
             </div>
-            <div className="sb-route-note"><Route aria-hidden="true" /><span><strong>Routed to {proposal.track}</strong> You can change the track below.</span></div>
+            <div className="sb-route-note"><Route aria-hidden="true" /><span><strong>Routed to {proposal.track}</strong> The published category rule assigns this track automatically.</span></div>
             <div className="sb-form sb-form--public">
               <Field label="Session title" error={errors.title}><input required aria-invalid={Boolean(errors.title)} value={proposal.title} onChange={(event) => updateProposal('title', event.target.value)} placeholder="A clear, specific title" /></Field>
               <Field label="Abstract" error={errors.abstract} hint={`${proposal.abstract.length}/800 characters`}><textarea required aria-invalid={Boolean(errors.abstract)} maxLength={800} rows={7} value={proposal.abstract} onChange={(event) => updateProposal('abstract', event.target.value)} placeholder="What problem did you solve, what did you learn, and what can attendees use?" /></Field>
               <div className="sb-form__row">
-                <Field label="Track" error={errors.track}><select required aria-invalid={Boolean(errors.track)} value={proposal.track} onChange={(event) => updateProposal('track', event.target.value)}>{tracks.map((item) => <option key={item}>{item}</option>)}</select></Field>
+                <Field label="Track" error={errors.track}><select required disabled aria-invalid={Boolean(errors.track)} value={proposal.track}>{tracks.map((item) => <option key={item}>{item}</option>)}</select></Field>
                 <Field label="Format"><select value={proposal.format} onChange={(event) => changeFormat(event.target.value)}>{formats.map((item) => <option key={item.name}>{item.name}</option>)}</select></Field>
                 <Field label="Minutes"><input min="5" max="180" type="number" value={proposal.duration} onChange={(event) => updateProposal('duration', event.target.value)} /></Field>
               </div>
