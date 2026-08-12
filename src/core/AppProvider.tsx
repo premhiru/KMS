@@ -7,6 +7,7 @@ import {
   type ReviewerMutationInput,
   type ReviewerMutationReceipt,
   type ReviewerQueue,
+  type SpeakerProposalMutationInput,
   type SpeakerPortalProjection,
   type WorkspaceSession,
 } from '../services'
@@ -54,8 +55,8 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   const remote = import.meta.env.PROD || import.meta.env.VITE_REMOTE_API === 'true'
   const api = useMemo(() => remote ? new OpenSpeakerApiClient({
     workspaceId: import.meta.env.VITE_WORKSPACE_ID || 'workspace-premhiru-kms',
-    eventId: import.meta.env.VITE_EVENT_ID || seedState.event.id,
-    eventSlug: import.meta.env.VITE_EVENT_SLUG || seedState.event.slug,
+    eventId: new URLSearchParams(window.location.search).get('eventId') || import.meta.env.VITE_EVENT_ID || seedState.event.id,
+    eventSlug: new URLSearchParams(window.location.search).get('eventSlug') || import.meta.env.VITE_EVENT_SLUG || seedState.event.slug,
   }) : undefined, [remote, seedState.event.id, seedState.event.slug])
   const [persistenceMode, setPersistenceMode] = useState<'local' | 'remote' | 'public-readonly'>(remote ? 'remote' : 'local')
   const [syncStatus, setSyncStatus] = useState<'loading' | 'saved' | 'saving' | 'error' | 'unauthorized'>(remote ? 'loading' : 'saved')
@@ -219,10 +220,20 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
               if (session?.role === 'speaker') {
                 const speaker = nextState.speakers[0]
                 if (!speaker) throw new Error('The signed-in speaker profile is unavailable.')
+                const savedTasks = new Map((savedStateRef.current?.tasks ?? []).map((task) => [task.id, task]))
+                const taskUpdates = nextState.tasks.flatMap((task) => {
+                  const savedTask = savedTasks.get(task.id)
+                  const completionChanged = Boolean(task.completedAt) !== Boolean(savedTask?.completedAt)
+                  const assetChanged = task.asset?.id !== savedTask?.asset?.id
+                  const savedCommentIds = new Set((savedTask?.comments ?? []).map((comment) => comment.id))
+                  const newComments = (task.comments ?? []).filter((comment) => comment.authorRole === 'speaker' && !savedCommentIds.has(comment.id))
+                  const base = completionChanged || assetChanged ? [{ id: task.id, completed: Boolean(task.completedAt), assetId: assetChanged ? task.asset?.id : undefined }] : []
+                  return [...base, ...newComments.map((comment) => ({ id: task.id, newComment: { id: comment.id, body: comment.body, createdAt: comment.createdAt } }))]
+                })
                 const saved = await api.patchSpeakerPortal({
                   expectedRevision: revision,
-                  profile: { firstName: speaker.firstName, lastName: speaker.lastName, company: speaker.company, jobTitle: speaker.jobTitle, bio: speaker.bio, pronouns: speaker.pronouns, photoUrl: speaker.photoUrl, availability: speaker.availability, status: speaker.status },
-                  taskUpdates: nextState.tasks.map((task) => ({ id: task.id, completed: Boolean(task.completedAt), assetId: task.asset?.id })),
+                  profile: { firstName: speaker.firstName, lastName: speaker.lastName, company: speaker.company, jobTitle: speaker.jobTitle, bio: speaker.bio, pronouns: speaker.pronouns, photoUrl: speaker.photoUrl, twitterUrl: speaker.twitterUrl, linkedinUrl: speaker.linkedinUrl, travelPreferences: speaker.travelPreferences, availability: speaker.availability, status: speaker.status },
+                  taskUpdates,
                 })
                 const projected = portalToState(saved.portal)
                 const reconciled = reconcileSavedState(nextState, pendingStateRef.current, projected)
@@ -273,6 +284,35 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   const submitCfp = useCallback(async (input: PublicCfpSubmissionInput) => { if (!api) throw new Error('Public submission transport is available on the deployed application.'); return api.submitCfp(input) }, [api])
   const uploadAsset = useCallback(async (file: File) => { if (!api || persistenceMode !== 'remote') throw new Error('Durable file storage is available to authenticated users on the deployed application.'); return api.uploadAsset(file) }, [api, persistenceMode])
   const downloadAsset = useCallback(async (assetId: string) => { if (!api || persistenceMode !== 'remote') throw new Error('Durable file storage is available to authenticated users on the deployed application.'); return api.downloadAsset(assetId) }, [api, persistenceMode])
+  const saveSpeakerProposal = useCallback(async (input: Omit<SpeakerProposalMutationInput, 'expectedRevision'>, submissionId?: string) => {
+    if (!api || revisionRef.current === null || session?.role !== 'speaker') throw new Error('A signed-in speaker profile is required.')
+    setSyncStatus('saving')
+    try {
+      let receipt
+      try {
+        receipt = await api.saveSpeakerProposal({ ...input, expectedRevision: revisionRef.current }, submissionId)
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== 'REVISION_CONFLICT') throw error
+        const latest = await api.getSpeakerPortal()
+        acceptLoaded(portalToState(latest.portal), latest.revision)
+        receipt = await api.saveSpeakerProposal({ ...input, expectedRevision: latest.revision }, submissionId)
+      }
+      const current = pendingStateRef.current
+      const next = {
+        ...current,
+        lastUpdatedAt: new Date().toISOString(),
+        submissions: current.submissions.some((item) => item.id === receipt.proposal.id)
+          ? current.submissions.map((item) => item.id === receipt.proposal.id ? receipt.proposal : item)
+          : [...current.submissions, receipt.proposal],
+      }
+      acceptLoaded(next, receipt.revision)
+      return receipt.proposal
+    } catch (error) {
+      setPersistenceError(error instanceof Error ? error.message : 'The proposal could not be saved.')
+      setSyncStatus('saved')
+      throw error
+    }
+  }, [acceptLoaded, api, session?.role])
   const submitAssignedReview = useCallback(async (input: Omit<ReviewerMutationInput, 'expectedRevision'>) => {
     if (!api || revisionRef.current === null || session?.role !== 'reviewer') throw new Error('A signed-in reviewer assignment is required.')
     if (reviewerSavingRef.current) throw new Error('A review save is already in progress.')
@@ -306,6 +346,6 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     }
   }, [acceptLoaded, api, session?.role])
 
-  const value = useMemo(() => ({ state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, submitAssignedReview }), [state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, submitAssignedReview])
+  const value = useMemo(() => ({ state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, saveSpeakerProposal, submitAssignedReview }), [state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, saveSpeakerProposal, submitAssignedReview])
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

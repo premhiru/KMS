@@ -26,6 +26,35 @@ export interface EventRecord {
   cfpConfig: Record<string, unknown>
 }
 
+export interface WorkspaceEventSummary {
+  id: Id
+  name: string
+  slug: string
+  startAt: string | null
+  endAt: string | null
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkspaceEventList { events: WorkspaceEventSummary[] }
+export interface CreateWorkspaceEventInput { state: AppState }
+export interface CreateWorkspaceEventReceipt { event: WorkspaceEventSummary }
+
+export interface SpeakerProposalMutationInput {
+  expectedRevision: number
+  action: 'save-draft' | 'submit'
+  title?: string
+  abstract?: string
+  track?: string
+  format?: string
+  durationMinutes?: number
+  tags?: string[]
+  customAnswers?: Record<string, unknown>
+}
+
+export interface SpeakerProposalMutationReceipt { revision: number; proposal: Submission }
+
 export interface VersionedAppState {
   event: EventRecord
   state: AppState
@@ -401,6 +430,9 @@ export interface SpeakerPortalProfilePatch {
   bio?: string
   pronouns?: string
   photoUrl?: string
+  twitterUrl?: string
+  linkedinUrl?: string
+  travelPreferences?: string
   availability?: AvailabilityWindow[]
   status?: 'invited' | 'confirmed' | 'declined'
 }
@@ -409,6 +441,7 @@ export interface SpeakerPortalTaskUpdate {
   id: Id
   completed?: boolean
   assetId?: Id
+  newComment?: { id: Id; body: string; createdAt: string }
 }
 
 export interface SpeakerPortalPatch {
@@ -447,7 +480,7 @@ export interface ReviewerMutationInput {
   expectedRevision: number
   assignmentId: Id
   submissionId: Id
-  review: { scores: Record<string, number>; note?: string }
+  review: { scores: Record<string, number>; answers?: Record<string, number | string>; note?: string }
   assignmentStatus?: EvaluationAssignmentStatus
   abstain?: boolean
 }

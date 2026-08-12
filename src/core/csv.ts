@@ -1,5 +1,5 @@
 import type { AppState, Submission } from '../domain/types'
-import { selectSubmissionScore, selectSubmissionSpeakers, speakerName } from './selectors'
+import { selectRoundResults, selectSubmissionScore, selectSubmissionSpeakers, selectWeightedReviewScore, speakerName } from './selectors'
 
 export interface CsvParseResult {
   headers: string[]
@@ -86,4 +86,29 @@ export function submissionsToCsv(state: AppState, submissions: Submission[] = st
     createdAt: submission.createdAt,
   }))
   return serializeCsv(rows)
+}
+
+export function reviewResultsToCsv(state: AppState, roundId: string): string {
+  const round = (state.evaluationRounds ?? []).find((item) => item.id === roundId)
+  if (!round) return serializeCsv([], ['round', 'proposalId', 'proposal', 'track', 'reviewer', 'reviewerEmail', 'criterion', 'answer', 'weightedScore', 'aggregate'])
+  const assignments = (state.evaluationAssignments ?? []).filter((assignment) => assignment.roundId === roundId)
+  const aggregateBySubmission = new Map(selectRoundResults(state, roundId).map((row) => [row.submission.id, row.aggregate]))
+  const rows = assignments.flatMap((assignment) => {
+    const submission = state.submissions.find((item) => item.id === assignment.submissionId)
+    const review = state.reviews.find((item) => item.assignmentId === assignment.id)
+    const answers = review?.answers ?? review?.scores ?? {}
+    return round.rubric.map((criterion) => ({
+      round: round.name,
+      proposalId: submission?.id ?? assignment.submissionId,
+      proposal: submission?.title ?? '',
+      track: submission?.track ?? '',
+      reviewer: assignment.reviewerName,
+      reviewerEmail: assignment.reviewerEmail,
+      criterion: criterion.label,
+      answer: answers[criterion.id] ?? '',
+      weightedScore: review ? selectWeightedReviewScore(state, review).toFixed(2) : '',
+      aggregate: aggregateBySubmission.get(assignment.submissionId)?.toFixed(2) ?? '',
+    }))
+  })
+  return serializeCsv(rows, ['round', 'proposalId', 'proposal', 'track', 'reviewer', 'reviewerEmail', 'criterion', 'answer', 'weightedScore', 'aggregate'])
 }

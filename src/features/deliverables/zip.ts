@@ -1,0 +1,11 @@
+export interface ZipEntry { name: string; bytes: Uint8Array }
+const table = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit += 1) value = (value & 1) ? 0xedb88320 ^ (value >>> 1) : value >>> 1; return value >>> 0 })
+function crc32(bytes: Uint8Array) { let value = 0xffffffff; for (const byte of bytes) value = table[(value ^ byte) & 0xff] ^ (value >>> 8); return (value ^ 0xffffffff) >>> 0 }
+function header(size: number) { return new Uint8Array(size) }
+function u16(view: DataView, offset: number, value: number) { view.setUint16(offset, value, true) }
+function u32(view: DataView, offset: number, value: number) { view.setUint32(offset, value, true) }
+export function createZip(entries: ZipEntry[]): Blob {
+  const encoder = new TextEncoder(); const local: Uint8Array[] = []; const central: Uint8Array[] = []; let offset = 0
+  entries.forEach((entry) => { const name = encoder.encode(entry.name.replaceAll('\\', '/')); const crc = crc32(entry.bytes); const block = header(30 + name.length + entry.bytes.length); const view = new DataView(block.buffer); u32(view,0,0x04034b50); u16(view,4,20); u16(view,8,0); u32(view,14,crc); u32(view,18,entry.bytes.length); u32(view,22,entry.bytes.length); u16(view,26,name.length); block.set(name,30); block.set(entry.bytes,30+name.length); local.push(block); const directory = header(46 + name.length); const dv = new DataView(directory.buffer); u32(dv,0,0x02014b50); u16(dv,4,20); u16(dv,6,20); u16(dv,10,0); u32(dv,16,crc); u32(dv,20,entry.bytes.length); u32(dv,24,entry.bytes.length); u16(dv,28,name.length); u32(dv,42,offset); directory.set(name,46); central.push(directory); offset += block.length })
+  const centralSize = central.reduce((sum, item) => sum + item.length, 0); const end = header(22); const ev = new DataView(end.buffer); u32(ev,0,0x06054b50); u16(ev,8,entries.length); u16(ev,10,entries.length); u32(ev,12,centralSize); u32(ev,16,offset); const blocks=[...local,...central,end]; const output=new Uint8Array(blocks.reduce((sum,item)=>sum+item.length,0)); let cursor=0; blocks.forEach((block)=>{output.set(block,cursor);cursor+=block.length}); return new Blob([output.buffer], { type: 'application/zip' })
+}

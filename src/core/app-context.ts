@@ -1,8 +1,8 @@
 import { createContext, useContext, type Dispatch } from 'react'
-import type { AppState } from '../domain/types'
+import type { AppState, Submission } from '../domain/types'
 import type { AppAction } from './reducer'
 import type { ValidationResult } from './storage'
-import type { DownloadedAsset, OpenSpeakerApiClient, PublicCfpSubmissionInput, PublicCfpSubmissionReceipt, ReviewerMutationInput, UploadedAsset, WorkspaceSession } from '../services'
+import type { DownloadedAsset, OpenSpeakerApiClient, PublicCfpSubmissionInput, PublicCfpSubmissionReceipt, ReviewerMutationInput, SpeakerProposalMutationInput, UploadedAsset, WorkspaceSession } from '../services'
 
 export type PersistenceMode = 'local' | 'remote' | 'public-readonly'
 export type SyncStatus = 'loading' | 'saved' | 'saving' | 'error' | 'unauthorized'
@@ -21,6 +21,7 @@ export interface AppContextValue {
   submitCfp: (input: PublicCfpSubmissionInput) => Promise<PublicCfpSubmissionReceipt>
   uploadAsset: (file: File) => Promise<UploadedAsset>
   downloadAsset: (assetId: string) => Promise<DownloadedAsset>
+  saveSpeakerProposal: (input: Omit<SpeakerProposalMutationInput, 'expectedRevision'>, submissionId?: string) => Promise<Submission>
   submitAssignedReview: (input: Omit<ReviewerMutationInput, 'expectedRevision'>) => Promise<void>
 }
 

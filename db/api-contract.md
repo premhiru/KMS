@@ -13,6 +13,8 @@ Responses use `{ "data": ... }` or `{ "error": { "code", "message", "details?", 
 ## Workspace and state
 
 - `GET /api/workspaces/:workspaceId/session` returns `{ user, role }` for a member.
+- `GET /api/workspaces/:workspaceId/events` is organizer-only and returns `{ events: [{ id, name, slug, startAt, endAt, revision, createdAt, updatedAt }] }`.
+- `POST /api/workspaces/:workspaceId/events` is organizer-only. Body: `{ state: AppState }`. `state.event.id/name/slug` identify the new event; the server rejects duplicate workspace IDs/slugs and atomically creates event state and its first history snapshot at revision 1.
 - `GET /api/workspaces/:workspaceId/events/:eventId/state` is organizer-only and returns `{ event, revision, state, ingestion, updatedAt }`. It deterministically imports/reconciles normalized CFP records.
 - `PUT /api/workspaces/:workspaceId/events/:eventId/state` is organizer-only. Body: `{ expectedRevision, event: { name, slug, cfpOpen, cfpConfig }, state }`. The Worker validates AppState schema 1, required entities, enums, dates, bounds, unique IDs, and references. Stale writes return `409 REVISION_CONFLICT`; CFP statuses reconcile transactionally.
 - `GET /api/workspaces/:workspaceId/events/:eventId/state/history` lists up to 200 durable revisions.
@@ -26,7 +28,12 @@ Only the exact `BOOTSTRAP_OWNER_EMAIL` may initialize a production workspace or 
 
 - `GET .../reviewer-queue` returns only assignments matching the authenticated email. Blind rounds redact speaker/source data.
 - `POST .../reviews` accepts only the reviewer's assigned submission with optimistic revision control.
+- Review bodies may include `{ scores, answers, note }`. Numeric `rating` criteria remain in `scores`; `select` and `text` values are stored in `answers`. Required fields, score ranges, configured dropdown options, and text length are enforced from the assigned round's rubric.
 - `GET|PATCH .../speaker-portal` requires a hosting email matching a speaker in that event. It returns/updates only that speaker, their submissions/tasks/sessions/assets, and approved resource pages/files.
+- Speaker task updates accept `{ id, completed?, assetId?, newComment?: { id, body, createdAt } }`. A newly selected event-owned asset appends an immutable server-built `deliverableVersions` entry without deleting earlier versions. Comment author name/role are derived from the verified speaker identity; duplicate comment IDs replay idempotently and conflicting reuse is rejected.
+- `POST .../speaker-portal/submissions` and `PATCH .../speaker-portal/submissions/:submissionId` accept `{ expectedRevision, action: "save-draft"|"submit", title?, abstract?, track?, format?, durationMinutes?, tags?, customAnswers? }`. They require a verified-email speaker match, enforce optimistic revision and event ownership, and reject writes after the CFP close time or after an organizer decision. Drafts may be incomplete; submission requires complete core fields.
+
+Successful anonymous CFP submission attempts an idempotent Resend confirmation when `RESEND_API_KEY` and `EMAIL_FROM` are configured. The receipt includes `confirmationEmail: { status: "sent"|"failed"|"skipped", ... }`; proposal acceptance is not rolled back if an external email provider is unavailable.
 
 ## Assets
 

@@ -104,6 +104,15 @@ describe('backend contract validation', () => {
     const state = createSeedState()
     expect(validateAppStateDocument(state, state.event.id)).toBe(state)
   })
+
+  it('validates typed round rubrics and reviewer pools', () => {
+    const state = validAppState('event-rubric', {
+      evaluationPlans: [{ id: 'plan-1', name: 'Plan', instructions: '', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+      evaluationRounds: [{ id: 'round-1', planId: 'plan-1', name: 'Round', position: 1, status: 'draft', opensAt: '2026-01-01T00:00:00.000Z', dueAt: '2026-02-01T00:00:00.000Z', blind: false, instructions: '', reviewerPool: [{ name: 'Reviewer', email: 'reviewer@example.com' }], rubric: [{ id: 'decision', label: 'Decision', type: 'select', options: ['Accept', 'Reject'], required: true, weight: 1, maxScore: 5 }], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    })
+    expect(validateAppStateDocument(state, 'event-rubric')).toBe(state)
+    expect(() => validateAppStateDocument({ ...state, evaluationRounds: [{ ...state.evaluationRounds[0], rubric: [{ id: 'decision', label: 'Decision', type: 'select', options: ['Only one'], weight: 1, maxScore: 5 }] }] }, 'event-rubric')).toThrowError(expect.objectContaining({ code: 'INVALID_APP_STATE' }))
+  })
 })
 
 describe('trusted forwarded identity', () => {
@@ -212,6 +221,40 @@ describe('public CFP to organizer state lifecycle', () => {
 })
 
 describe('speaker, reviewer, and integration boundaries', () => {
+  it('lets a verified speaker save and submit only their proposal while the CFP is open', async () => {
+    const DB = new D1Mock()
+    const env = { DB, ALLOW_LOCAL_AUTH: 'true' }
+    const ownerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-proposals', 'oai-authenticated-user-email': 'owner@example.com' }
+    const speakerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'speaker-user', 'oai-authenticated-user-email': 'speaker@example.com' }
+    const eventEndpoint = 'https://app.test/api/workspaces/workspace-proposals/events/event-proposals/state'
+    const state = validAppState('event-proposals', {
+      event: { name: 'Proposal Summit', slug: 'proposal-summit', cfp: { open: true, closeAt: '2099-01-01T00:00:00.000Z', version: 2 } },
+      speakers: [{ id: 'speaker-proposal', firstName: 'Pia', lastName: 'Singh', email: 'speaker@example.com', company: '', jobTitle: '', bio: '', status: 'invited', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    })
+    expect((await fetchHandler(new Request(eventEndpoint, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: 0, event: { name: 'Proposal Summit', slug: 'proposal-summit', cfpOpen: true, cfpConfig: state.event.cfp }, state }) }), env)).status).toBe(201)
+    const create = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-proposals/events/event-proposals/speaker-portal/submissions', { method: 'POST', headers: speakerHeaders, body: JSON.stringify({ expectedRevision: 1, action: 'save-draft', title: 'Draft title', abstract: '', track: 'AI', format: 'Talk', durationMinutes: 30 }) }), env)
+    expect(create.status).toBe(201)
+    const created = await create.json()
+    expect(created.data.proposal).toMatchObject({ lifecycle: 'draft', speakerIds: ['speaker-proposal'] })
+    const submit = await fetchHandler(new Request(`https://app.test/api/workspaces/workspace-proposals/events/event-proposals/speaker-portal/submissions/${created.data.proposal.id}`, { method: 'PATCH', headers: speakerHeaders, body: JSON.stringify({ expectedRevision: 2, action: 'submit', abstract: 'A sufficiently detailed abstract for the completed speaker proposal.' }) }), env)
+    expect(submit.status).toBe(200)
+    expect((await submit.json()).data.proposal).toMatchObject({ lifecycle: 'submitted', title: 'Draft title' })
+    DB.database.close()
+  })
+
+  it('creates and lists workspace-scoped events with revision one', async () => {
+    const DB = new D1Mock()
+    const env = { DB, ALLOW_LOCAL_AUTH: 'true' }
+    const headers = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-events', 'oai-authenticated-user-email': 'owner@example.com' }
+    const state = validAppState('event-created', { event: { name: 'Created Summit', slug: 'created-summit' } })
+    const response = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-events/events', { method: 'POST', headers, body: JSON.stringify({ state }) }), env)
+    expect(response.status).toBe(201)
+    expect(await response.json()).toMatchObject({ data: { event: { id: 'event-created', slug: 'created-summit', revision: 1 } } })
+    const listed = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-events/events', { headers }), env)
+    expect(await listed.json()).toMatchObject({ data: { events: [{ id: 'event-created', revision: 1 }] } })
+    DB.database.close()
+  })
+
   it('claims a matched speaker, isolates blind reviewers, and sends an idempotent ICS email', async () => {
     const DB = new D1Mock()
     const env = { DB, RESEND_API_KEY: 'resend-test', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true' }
@@ -259,9 +302,11 @@ describe('speaker, reviewer, and integration boundaries', () => {
     expect(await sessionResponse.json()).toMatchObject({ data: { user: { email: 'speaker@example.com' }, role: 'speaker' } })
     const forbiddenTask = await fetchHandler(new Request(portalEndpoint, { method: 'PATCH', headers: speakerHeaders, body: JSON.stringify({ expectedRevision: 1, taskUpdates: [{ id: 'task-other', completed: true }] }) }), env)
     expect(forbiddenTask.status).toBe(403)
-    const portalUpdate = await fetchHandler(new Request(portalEndpoint, { method: 'PATCH', headers: speakerHeaders, body: JSON.stringify({ expectedRevision: 1, profile: { bio: 'Updated own biography' }, taskUpdates: [{ id: 'task-own', completed: true }] }) }), env)
+    const invalidSocial = await fetchHandler(new Request(portalEndpoint, { method: 'PATCH', headers: speakerHeaders, body: JSON.stringify({ expectedRevision: 1, profile: { linkedinUrl: 'http://insecure.example/profile' } }) }), env)
+    expect(invalidSocial.status).toBe(422)
+    const portalUpdate = await fetchHandler(new Request(portalEndpoint, { method: 'PATCH', headers: speakerHeaders, body: JSON.stringify({ expectedRevision: 1, profile: { bio: 'Updated own biography', twitterUrl: 'https://x.com/speaker', linkedinUrl: 'https://linkedin.com/in/speaker', travelPreferences: 'Window seat' }, taskUpdates: [{ id: 'task-own', completed: true }] }) }), env)
     expect(portalUpdate.status).toBe(200)
-    expect((await portalUpdate.json()).data.revision).toBe(2)
+    expect(await portalUpdate.json()).toMatchObject({ data: { revision: 2, portal: { speaker: { twitterUrl: 'https://x.com/speaker', travelPreferences: 'Window seat' } } } })
 
     const reviewerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'reviewer-1', 'oai-authenticated-user-email': 'reviewer@example.com' }
     const queueResponse = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-secure/events/event-secure/reviewer-queue', { headers: reviewerHeaders }), env)
@@ -376,7 +421,8 @@ describe('production operations', () => {
     const ownerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-files', 'oai-authenticated-user-email': 'owner-files@example.com' }
     const speaker = { id: 'speaker-files', firstName: 'File', lastName: 'Speaker', email: 'speaker-files@example.com', company: '', jobTitle: '', bio: '', status: 'confirmed', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
     for (const [eventId, slug, speakers] of [['event-files', 'files', [speaker]], ['event-other', 'other', []]]) {
-      const state = validAppState(eventId, { event: { name: `Event ${slug}`, slug }, speakers })
+      const tasks = eventId === 'event-files' ? [{ id: 'task-files', speakerId: speaker.id, kind: 'supporting-document', title: 'Supporting document', dueAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }] : []
+      const state = validAppState(eventId, { event: { name: `Event ${slug}`, slug }, speakers, tasks })
       const response = await fetchHandler(new Request(`https://app.test/api/workspaces/workspace-files/events/${eventId}/state`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)
       expect(response.status).toBe(201)
     }
@@ -387,6 +433,7 @@ describe('production operations', () => {
     const uploadHeaders = { ...speakerHeaders, 'content-type': 'image/png', 'x-file-name': 'headshot.png' }
     const firstUpload = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: uploadHeaders, body: png }), env)
     expect(firstUpload.status).toBe(201)
+    const firstAsset = (await firstUpload.json()).data
     const quotaExceeded = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: uploadHeaders, body: png }), env)
     expect(quotaExceeded.status).toBe(413)
     expect((await quotaExceeded.json()).error.code).toBe('USER_STORAGE_QUOTA_EXCEEDED')
@@ -395,10 +442,20 @@ describe('production operations', () => {
     const badSignature = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: uploadHeaders, body: new Uint8Array(16) }), { ...env, MAX_USER_EVENT_ASSET_BYTES: '5000' })
     expect(badSignature.status).toBe(415)
     const expandedEnv = { ...env, MAX_USER_EVENT_ASSET_BYTES: '5000' }
-    expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: { ...speakerHeaders, 'content-type': 'text/plain', 'x-file-name': 'notes.txt' }, body: new TextEncoder().encode('Speaker notes') }), expandedEnv)).status).toBe(201)
+    const notesUpload = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: { ...speakerHeaders, 'content-type': 'text/plain', 'x-file-name': 'notes.txt' }, body: new TextEncoder().encode('Speaker notes') }), expandedEnv)
+    expect(notesUpload.status).toBe(201)
+    const notesAsset = (await notesUpload.json()).data
     expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: { ...speakerHeaders, 'content-type': 'text/plain', 'x-file-name': 'binary.txt' }, body: new Uint8Array([65, 0, 66]) }), expandedEnv)).status).toBe(415)
     expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: { ...speakerHeaders, 'content-type': 'application/msword', 'x-file-name': 'proposal.doc' }, body: new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) }), expandedEnv)).status).toBe(201)
     expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-files/events/event-files/assets', { method: 'POST', headers: { ...speakerHeaders, 'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'x-file-name': 'proposal.docx' }, body: new Uint8Array([0x50, 0x4b, 0x03, 0x04]) }), expandedEnv)).status).toBe(201)
+    const portalEndpoint = 'https://app.test/api/workspaces/workspace-files/events/event-files/speaker-portal'
+    const firstPatch = await fetchHandler(new Request(portalEndpoint, { method: 'PATCH', headers: { ...speakerHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 1, taskUpdates: [{ id: 'task-files', completed: true, assetId: firstAsset.id, newComment: { id: 'comment-speaker-1', body: 'First version uploaded', createdAt: '2026-02-01T00:00:00.000Z' } }] }) }), expandedEnv)
+    expect(firstPatch.status).toBe(200)
+    const secondPatch = await fetchHandler(new Request(portalEndpoint, { method: 'PATCH', headers: { ...speakerHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 2, taskUpdates: [{ id: 'task-files', completed: true, assetId: notesAsset.id, newComment: { id: 'comment-speaker-1', body: 'First version uploaded', createdAt: '2026-02-01T00:00:00.000Z' } }] }) }), expandedEnv)
+    expect(secondPatch.status).toBe(200)
+    const task = (await secondPatch.json()).data.portal.tasks[0]
+    expect(task.deliverableVersions.map((version) => version.asset.id)).toEqual([firstAsset.id, notesAsset.id])
+    expect(task.comments).toEqual([{ id: 'comment-speaker-1', authorName: 'File Speaker', authorRole: 'speaker', body: 'First version uploaded', createdAt: '2026-02-01T00:00:00.000Z' }])
     DB.database.close()
   })
 

@@ -168,7 +168,7 @@ describe('integration and speaker portal contract', () => {
       .mockResolvedValueOnce(json({ data: { revision: 5, portal: { ...portal, speaker: { ...portal.speaker, company: 'Updated Co' } } } }, { headers: { etag: '"5"' } }))
     const api = client(fetcher)
     await expect(api.getSpeakerPortal()).resolves.toMatchObject({ revision: 4, portal: { assets: [{ fileName: 'deck.pdf', sizeBytes: 100 }] } })
-    const patch = { expectedRevision: 4, profile: { company: 'Updated Co', status: 'confirmed' as const }, taskUpdates: [{ id: portal.tasks[0].id, completed: true }] }
+    const patch = { expectedRevision: 4, profile: { company: 'Updated Co', status: 'confirmed' as const }, taskUpdates: [{ id: portal.tasks[0].id, completed: true, assetId: 'asset-1', newComment: { id: 'comment-1', body: 'Uploaded for review', createdAt: state.lastUpdatedAt } }] }
     await expect(api.patchSpeakerPortal(patch)).resolves.toMatchObject({ revision: 5, portal: { speaker: { company: 'Updated Co' } } })
     expect(fetcher.mock.calls[1][1]?.method).toBe('PATCH')
     expect(new Headers(fetcher.mock.calls[1][1]?.headers).get('if-match')).toBe('"4"')

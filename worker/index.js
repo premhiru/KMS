@@ -221,7 +221,9 @@ export function validateAppStateDocument(state, expectedEventId) {
 
   submissions.forEach((submission, index) => {
     const path = `submissions[${index}]`
-    for (const field of ['title', 'abstract', 'track', 'format', 'createdAt', 'updatedAt']) stateString(submission, field, path, errors, field === 'abstract' ? 10_000 : 500, field === 'track')
+    const isDraft = submission.lifecycle === 'draft'
+    for (const field of ['title', 'abstract', 'track', 'format', 'createdAt', 'updatedAt']) stateString(submission, field, path, errors, field === 'abstract' ? 10_000 : 500, field === 'track' || (isDraft && ['title', 'abstract'].includes(field)))
+    if (submission.lifecycle !== undefined && !['draft', 'submitted'].includes(submission.lifecycle)) errors.push(`${path}.lifecycle is invalid.`)
     if (!['needs-review', 'in-review', 'accepted', 'waitlisted', 'declined'].includes(submission.status)) errors.push(`${path}.status is invalid.`)
     if (!Number.isSafeInteger(submission.durationMinutes) || submission.durationMinutes < 5 || submission.durationMinutes > 480) errors.push(`${path}.durationMinutes must be an integer from 5 to 480.`)
     if (!Array.isArray(submission.speakerIds) || submission.speakerIds.length > 20 || !submission.speakerIds.every((speakerId) => speakerIds.has(speakerId))) errors.push(`${path}.speakerIds must reference known speakers.`)
@@ -235,6 +237,7 @@ export function validateAppStateDocument(state, expectedEventId) {
     for (const field of ['submissionId', 'reviewerName', 'note', 'updatedAt']) stateString(review, field, path, errors, field === 'note' ? 10_000 : 300, field === 'note')
     if (!submissionIds.has(review.submissionId)) errors.push(`${path}.submissionId must reference a known submission.`)
     if (!isRecord(review.scores) || !Object.values(review.scores).every((score) => typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 100)) errors.push(`${path}.scores must contain finite values from 0 to 100.`)
+    if (review.answers !== undefined && (!isRecord(review.answers) || Object.keys(review.answers).length > 100 || !Object.values(review.answers).every((answer) => (typeof answer === 'string' && answer.length <= 5_000) || (typeof answer === 'number' && Number.isFinite(answer))))) errors.push(`${path}.answers must contain at most 100 short text or numeric values.`)
     stateDate(review, 'updatedAt', path, errors)
   })
 
@@ -246,6 +249,23 @@ export function validateAppStateDocument(state, expectedEventId) {
     stateDate(task, 'dueAt', path, errors)
     stateDate(task, 'updatedAt', path, errors)
     stateDate(task, 'completedAt', path, errors, true)
+    if (task.deliverableVersions !== undefined) {
+      if (!Array.isArray(task.deliverableVersions) || task.deliverableVersions.length > 100) errors.push(`${path}.deliverableVersions must contain at most 100 entries.`)
+      else {
+        const versionIds = new Set()
+        let priorVersion = 0
+        task.deliverableVersions.forEach((version, versionIndex) => {
+          const versionPath = `${path}.deliverableVersions[${versionIndex}]`
+          if (!isRecord(version) || typeof version.id !== 'string' || !version.id || versionIds.has(version.id)) errors.push(`${versionPath}.id must be unique.`)
+          else versionIds.add(version.id)
+          if (!Number.isSafeInteger(version?.version) || version.version <= priorVersion) errors.push(`${versionPath}.version must increase monotonically.`)
+          else priorVersion = version.version
+          if (!isRecord(version?.asset) || typeof version.asset.id !== 'string' || typeof version.asset.name !== 'string' || typeof version.asset.type !== 'string' || !Number.isSafeInteger(version.asset.size)) errors.push(`${versionPath}.asset is invalid.`)
+          if (!validIsoDate(version?.uploadedAt) || typeof version?.uploadedBy !== 'string' || !version.uploadedBy.trim()) errors.push(`${versionPath} upload metadata is invalid.`)
+        })
+      }
+    }
+    if (task.comments !== undefined && (!Array.isArray(task.comments) || task.comments.length > 500 || !task.comments.every((comment) => isRecord(comment) && typeof comment.id === 'string' && comment.id && typeof comment.authorName === 'string' && comment.authorName.trim() && ['speaker', 'organizer'].includes(comment.authorRole) && typeof comment.body === 'string' && comment.body.trim() && comment.body.length <= 5_000 && validIsoDate(comment.createdAt)))) errors.push(`${path}.comments is invalid.`)
   })
 
   sessions.forEach((session, index) => {
@@ -286,6 +306,24 @@ export function validateAppStateDocument(state, expectedEventId) {
     if (!planIds.has(round.planId)) errors.push(`evaluationRounds[${index}].planId must reference a known plan.`)
     if (!['draft', 'open', 'closed'].includes(round.status)) errors.push(`evaluationRounds[${index}].status is invalid.`)
     if (!Array.isArray(round.rubric) || round.rubric.length < 1 || round.rubric.length > 100) errors.push(`evaluationRounds[${index}].rubric must contain 1 to 100 criteria.`)
+    else {
+      const criterionIds = new Set()
+      round.rubric.forEach((criterion, criterionIndex) => {
+        const path = `evaluationRounds[${index}].rubric[${criterionIndex}]`
+        const type = criterion?.type || 'rating'
+        if (!isRecord(criterion) || typeof criterion.id !== 'string' || !criterion.id || criterionIds.has(criterion.id)) errors.push(`${path}.id must be unique and non-empty.`)
+        else criterionIds.add(criterion.id)
+        if (!['rating', 'select', 'text'].includes(type)) errors.push(`${path}.type is invalid.`)
+        if (typeof criterion?.label !== 'string' || !criterion.label.trim() || criterion.label.length > 200) errors.push(`${path}.label is invalid.`)
+        if (typeof criterion?.weight !== 'number' || !Number.isFinite(criterion.weight) || criterion.weight < 0 || criterion.weight > 1000) errors.push(`${path}.weight is invalid.`)
+        if (type === 'rating' && (!Number.isSafeInteger(criterion.maxScore) || criterion.maxScore < 2 || criterion.maxScore > 20)) errors.push(`${path}.maxScore must be an integer from 2 to 20.`)
+        if (type === 'select' && (!Array.isArray(criterion.options) || criterion.options.length < 2 || criterion.options.length > 50 || !criterion.options.every((option) => typeof option === 'string' && option.trim() && option.length <= 200))) errors.push(`${path}.options must contain 2 to 50 labels.`)
+      })
+    }
+    if (round.opensAt !== undefined && !validIsoDate(round.opensAt)) errors.push(`evaluationRounds[${index}].opensAt must be an ISO date-time.`)
+    if (!validIsoDate(round.dueAt)) errors.push(`evaluationRounds[${index}].dueAt must be an ISO date-time.`)
+    if (round.opensAt && validIsoDate(round.opensAt) && validIsoDate(round.dueAt) && Date.parse(round.dueAt) <= Date.parse(round.opensAt)) errors.push(`evaluationRounds[${index}] must close after it opens.`)
+    if (round.reviewerPool !== undefined && (!Array.isArray(round.reviewerPool) || round.reviewerPool.length > 500 || !round.reviewerPool.every((reviewer) => isRecord(reviewer) && validEmail(reviewer.email) && typeof reviewer.name === 'string' && reviewer.name.length <= 200))) errors.push(`evaluationRounds[${index}].reviewerPool is invalid.`)
   })
   assignments.forEach((assignment, index) => {
     if (!roundIds.has(assignment.roundId)) errors.push(`evaluationAssignments[${index}].roundId must reference a known round.`)
@@ -555,6 +593,22 @@ export function mergePublicSubmissionsIntoState(state, rows) {
   return { state: merged, importedCount }
 }
 
+async function sendCfpConfirmation(env, event, input, submissionId) {
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM) return { status: 'skipped', reason: 'provider-not-configured' }
+  try {
+    const response = await fetchWithTimeout('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', 'Idempotency-Key': `cfp-confirmation-${submissionId}` },
+      body: JSON.stringify({ from: env.EMAIL_FROM, to: [input.speakerEmail], subject: `${event.name}: proposal received`, text: `Hi ${input.speakerName},\n\nWe received “${input.title}” for ${event.name}. Its current status is Submitted.\n\nReference: ${submissionId}` }),
+    }, env)
+    const payload = await providerPayload(response)
+    if (!response.ok) return { status: 'failed', providerMessage: payload.message || `HTTP ${response.status}` }
+    return { status: 'sent', providerMessageId: payload.id || null }
+  } catch (error) {
+    return { status: 'failed', providerMessage: error instanceof Error ? error.message.slice(0, 500) : 'Confirmation delivery failed.' }
+  }
+}
+
 async function publicCfp(request, env, requestId, workspaceId, eventSlug) {
   const event = await env.DB.prepare(`SELECT e.id,e.name,e.slug,e.cfp_config,s.revision,s.state_json FROM events e LEFT JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? AND e.slug=? AND e.cfp_open=1`).bind(workspaceId, eventSlug).first()
   if (!event) throw new ApiError(404, 'CFP_NOT_FOUND', 'This call for proposals is unavailable or closed.')
@@ -595,7 +649,9 @@ async function publicCfp(request, env, requestId, workspaceId, eventSlug) {
   const inserted = await env.DB.prepare(`INSERT INTO public_submissions (id,workspace_id,event_id,title,abstract,speaker_name,speaker_email,track,format,consent,status,payload_json,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,1,'needs-review',?,?,? WHERE (SELECT COUNT(*) FROM public_submissions WHERE event_id=? AND lower(speaker_email)=?) < ?`).bind(submissionId, workspaceId, event.id, input.title, input.abstract, input.speakerName, input.speakerEmail, input.track, input.format, JSON.stringify(input), timestamp, timestamp, event.id, input.speakerEmail, perSpeakerLimit).run()
   if (Number(inserted?.meta?.changes ?? inserted?.changes ?? 0) < 1) throw new ApiError(409, 'SUBMISSION_LIMIT_REACHED', 'This speaker has reached the proposal limit for this event.', { limit: perSpeakerLimit, allowMultiple: config.allowMultiple === true })
   await audit(env, workspaceId, null, 'cfp.submitted', 'submission', submissionId, { eventId: event.id }, requestId)
-  return json({ data: { id: submissionId, status: 'needs-review', submittedAt: timestamp } }, 201, request, env, requestId)
+  const confirmationEmail = await sendCfpConfirmation(env, event, input, submissionId)
+  await audit(env, workspaceId, null, `cfp.confirmation.${confirmationEmail.status}`, 'submission', submissionId, { eventId: event.id, providerMessageId: confirmationEmail.providerMessageId, providerMessage: confirmationEmail.providerMessage }, requestId)
+  return json({ data: { id: submissionId, status: 'needs-review', submittedAt: timestamp, confirmationEmail } }, 201, request, env, requestId)
 }
 
 export function sanitizePublicState(state, workspaceId, eventSlug) {
@@ -629,6 +685,38 @@ async function publicEventState(request, env, requestId, workspaceId, eventSlug)
   const row = await env.DB.prepare(`SELECT e.id,e.name,e.slug,s.revision,s.state_json,s.updated_at FROM events e JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? AND e.slug=?`).bind(workspaceId, eventSlug).first()
   if (!row) throw new ApiError(404, 'PUBLIC_EVENT_NOT_FOUND', 'Published event state was not found.')
   return json({ data: { event: { id: row.id, name: row.name, slug: row.slug }, revision: row.revision, state: sanitizePublicState(parseJsonColumn(row.state_json, {}), workspaceId, eventSlug), updatedAt: row.updated_at } }, 200, request, env, requestId, { ETag: `"${row.revision}"` })
+}
+
+async function workspaceEvents(request, env, requestId, workspaceId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method === 'GET') {
+    const rows = await env.DB.prepare(`SELECT e.id,e.name,e.slug,e.created_at,e.updated_at,s.revision,s.state_json FROM events e LEFT JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? ORDER BY e.created_at DESC`).bind(workspaceId).all()
+    const events = (rows.results || []).map((row) => {
+      const state = parseJsonColumn(row.state_json, {})
+      return { id: row.id, name: row.name, slug: row.slug, startAt: state.event?.startAt || null, endAt: state.event?.endAt || null, revision: Number(row.revision || 0), createdAt: row.created_at, updatedAt: row.updated_at }
+    })
+    return json({ data: { events } }, 200, request, env, requestId)
+  }
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET, POST' })
+  const body = await jsonBody(request, 1_000_000)
+  if (!isRecord(body.state) || !isRecord(body.state.event)) throw new ApiError(422, 'VALIDATION_ERROR', 'state with event configuration is required.', { field: 'state' })
+  const eventId = typeof body.state.event.id === 'string' && body.state.event.id.trim() ? body.state.event.id.trim() : id('event')
+  const state = { ...body.state, event: { ...body.state.event, id: eventId } }
+  validateAppStateDocument(state, eventId)
+  const name = requiredString(state.event.name, 'state.event.name', 2, 120)
+  const slug = requiredString(state.event.slug, 'state.event.slug', 2, 80).toLowerCase()
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new ApiError(422, 'VALIDATION_ERROR', 'state.event.slug must be URL-safe lowercase text.', { field: 'state.event.slug' })
+  const duplicate = await env.DB.prepare(`SELECT id FROM events WHERE workspace_id=? AND (id=? OR slug=?)`).bind(workspaceId, eventId, slug).first()
+  if (duplicate) throw new ApiError(409, 'EVENT_ALREADY_EXISTS', 'An event with this id or slug already exists.', { eventId: duplicate.id, slug })
+  const timestamp = now()
+  const cfpConfig = isRecord(state.event.cfp) ? state.event.cfp : {}
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO events (id,workspace_id,name,slug,cfp_open,cfp_config,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`).bind(eventId, workspaceId, name, slug, cfpConfig.open === true ? 1 : 0, JSON.stringify(cfpConfig), timestamp, timestamp),
+    env.DB.prepare(`INSERT INTO event_states (event_id,revision,state_json,updated_by,updated_at) VALUES (?,1,?,?,?)`).bind(eventId, JSON.stringify(state), access.user.id, timestamp),
+    env.DB.prepare(`INSERT INTO event_state_history (workspace_id,event_id,revision,state_json,updated_by,created_at,reason) VALUES (?,?,1,?,?,?,'event created')`).bind(workspaceId, eventId, JSON.stringify(state), access.user.id, timestamp),
+  ])
+  await audit(env, workspaceId, access.user.id, 'event.created', 'event', eventId, { name, slug, revision: 1 }, requestId)
+  return json({ data: { event: { id: eventId, name, slug, startAt: state.event.startAt, endAt: state.event.endAt, revision: 1, createdAt: timestamp, updatedAt: timestamp } } }, 201, request, env, requestId, { ETag: '"1"' })
 }
 
 async function publicSpeakerHeadshot(request, env, requestId, workspaceId, eventSlug, speakerId) {
@@ -1334,7 +1422,7 @@ async function speakerPortal(request, env, requestId, workspaceId, eventId) {
   const body = await jsonBody(request, 200_000)
   if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision !== loaded.row.revision) throw new ApiError(409, 'REVISION_CONFLICT', 'Speaker data has changed since it was loaded.', { expectedRevision: body.expectedRevision, currentRevision: loaded.row.revision })
   const profile = body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile) ? body.profile : {}
-  const allowedText = { firstName: 80, lastName: 80, company: 160, jobTitle: 160, bio: 5000, pronouns: 80, photoUrl: 2000 }
+  const allowedText = { firstName: 80, lastName: 80, company: 160, jobTitle: 160, bio: 5000, pronouns: 80, photoUrl: 2000, twitterUrl: 2000, linkedinUrl: 2000, travelPreferences: 5000 }
   const profilePatch = {}
   for (const [field, max] of Object.entries(allowedText)) {
     if (profile[field] !== undefined) {
@@ -1343,6 +1431,7 @@ async function speakerPortal(request, env, requestId, workspaceId, eventId) {
     }
   }
   if (profilePatch.photoUrl && !/^https:\/\//i.test(profilePatch.photoUrl)) throw new ApiError(422, 'VALIDATION_ERROR', 'photoUrl must use HTTPS.', { field: 'profile.photoUrl' })
+  for (const field of ['twitterUrl', 'linkedinUrl']) if (profilePatch[field] && !/^https:\/\//i.test(profilePatch[field])) throw new ApiError(422, 'VALIDATION_ERROR', `${field} must use HTTPS.`, { field: `profile.${field}` })
   if (profile.status !== undefined) {
     if (!new Set(['invited', 'confirmed', 'declined']).has(profile.status)) throw new ApiError(422, 'VALIDATION_ERROR', 'status must be invited, confirmed, or declined.', { field: 'profile.status' })
     profilePatch.status = profile.status
@@ -1361,9 +1450,28 @@ async function speakerPortal(request, env, requestId, workspaceId, eventId) {
     if (update.assetId) {
       const assetRow = await env.DB.prepare(`SELECT id,file_name,content_type,size_bytes,created_at FROM assets WHERE id=? AND workspace_id=? AND event_id=? AND uploaded_by=?`).bind(update.assetId, workspaceId, eventId, access.user.id).first()
       if (!assetRow) throw new ApiError(403, 'ASSET_FORBIDDEN', 'The selected asset does not belong to you in this event.')
-      asset = { id: assetRow.id, name: assetRow.file_name, type: assetRow.content_type, size: assetRow.size_bytes, selectedAt: assetRow.created_at }
+      asset = { id: assetRow.id, name: assetRow.file_name, type: assetRow.content_type, size: assetRow.size_bytes, selectedAt: assetRow.created_at, storage: 'r2' }
     }
-    taskMap.set(task.id, { ...task, completedAt: update.completed === true ? now() : update.completed === false ? undefined : task.completedAt, asset: asset || task.asset, updatedAt: now() })
+    let deliverableVersions = Array.isArray(task.deliverableVersions) ? [...task.deliverableVersions] : []
+    let assetVersion = task.assetVersion
+    if (asset && asset.id !== task.asset?.id) {
+      if (task.asset?.id && !deliverableVersions.some((version) => version.asset?.id === task.asset.id)) deliverableVersions.push({ id: `deliverable-version-${task.asset.id}`, asset: task.asset, version: Number(task.assetVersion) || 1, uploadedAt: task.asset.selectedAt || task.updatedAt, uploadedBy: 'Previous speaker upload' })
+      const nextVersion = Math.max(Number(task.assetVersion) || 0, ...deliverableVersions.map((version) => Number(version.version) || 0)) + 1
+      deliverableVersions.push({ id: `deliverable-version-${asset.id}`, asset, version: nextVersion, uploadedAt: asset.selectedAt, uploadedBy: `${speaker.firstName || ''} ${speaker.lastName || ''}`.trim() || speaker.email })
+      assetVersion = nextVersion
+    }
+    let comments = Array.isArray(task.comments) ? [...task.comments] : []
+    if (update.newComment !== undefined) {
+      const comment = update.newComment
+      if (!isRecord(comment) || !validId(comment.id) || typeof comment.body !== 'string' || !comment.body.trim() || comment.body.length > 5_000 || !validIsoDate(comment.createdAt)) throw new ApiError(422, 'VALIDATION_ERROR', 'newComment requires a valid id, body, and ISO createdAt.', { field: 'taskUpdates.newComment' })
+      const duplicate = comments.find((item) => item.id === comment.id)
+      if (duplicate && duplicate.body !== comment.body.trim()) throw new ApiError(409, 'COMMENT_ID_CONFLICT', 'A different comment already uses this id.', { commentId: comment.id })
+      if (!duplicate) {
+        if (comments.length >= 500) throw new ApiError(422, 'VALIDATION_ERROR', 'A task may contain at most 500 comments.', { field: 'taskUpdates.newComment' })
+        comments.push({ id: comment.id, authorName: `${speaker.firstName || ''} ${speaker.lastName || ''}`.trim() || speaker.email, authorRole: 'speaker', body: comment.body.trim(), createdAt: comment.createdAt })
+      }
+    }
+    taskMap.set(task.id, { ...task, completedAt: update.completed === true ? now() : update.completed === false ? undefined : task.completedAt, asset: asset || task.asset, assetVersion, deliverableVersions, comments, approvalStatus: asset && asset.id !== task.asset?.id ? 'pending' : task.approvalStatus, updatedAt: now() })
   }
   const timestamp = now()
   const nextState = {
@@ -1378,6 +1486,62 @@ async function speakerPortal(request, env, requestId, workspaceId, eventId) {
   await audit(env, workspaceId, access.user.id, 'speaker.portal.updated', 'speaker', speaker.id, { taskIds: taskUpdates.map((update) => update.id), profileFields: Object.keys(profilePatch), revision: updated.revision }, requestId)
   const updatedSpeaker = nextState.speakers.find((item) => item.id === speaker.id)
   return json({ data: { revision: updated.revision, portal: projectSpeakerPortal(nextState, updatedSpeaker, assetProjection, workspaceId, eventId) } }, 200, request, env, requestId, { ETag: `"${updated.revision}"` })
+}
+
+function speakerProposalFields(body, existing, state, submit) {
+  const text = (field, max, fallback = '') => {
+    const value = body[field] === undefined ? fallback : body[field]
+    if (typeof value !== 'string' || value.length > max) throw new ApiError(422, 'VALIDATION_ERROR', `${field} is invalid.`, { field })
+    return value.trim()
+  }
+  const title = text('title', 200, existing?.title)
+  const abstract = text('abstract', 20_000, existing?.abstract)
+  const track = text('track', 120, existing?.track)
+  const format = text('format', 120, existing?.format || 'Talk')
+  if (submit && (title.length < 3 || abstract.length < 20 || !track || !format)) throw new ApiError(422, 'VALIDATION_ERROR', 'Submitted proposals require title, abstract, track, and format.', { fields: ['title', 'abstract', 'track', 'format'] })
+  if (track && Array.isArray(state.event?.tracks) && state.event.tracks.length && !state.event.tracks.includes(track)) throw new ApiError(422, 'VALIDATION_ERROR', 'track is not configured for this event.', { field: 'track' })
+  const durationMinutes = body.durationMinutes === undefined ? Number(existing?.durationMinutes || 30) : Number(body.durationMinutes)
+  if (!Number.isSafeInteger(durationMinutes) || durationMinutes < 5 || durationMinutes > 480) throw new ApiError(422, 'VALIDATION_ERROR', 'durationMinutes must be between 5 and 480.', { field: 'durationMinutes' })
+  const tags = body.tags === undefined ? (existing?.tags || []) : body.tags
+  if (!Array.isArray(tags) || tags.length > 20 || !tags.every((tag) => typeof tag === 'string' && tag.length <= 80)) throw new ApiError(422, 'VALIDATION_ERROR', 'tags must be an array of up to 20 short strings.', { field: 'tags' })
+  return { title, abstract, track, format, durationMinutes, tags: tags.map((tag) => tag.trim()).filter(Boolean), customAnswers: isRecord(body.customAnswers) ? body.customAnswers : existing?.customAnswers || {} }
+}
+
+async function speakerProposalMutation(request, env, requestId, workspaceId, eventId, submissionId) {
+  const user = await authenticatedUser(request, env)
+  const loaded = await loadedEventState(env, workspaceId, eventId)
+  const speaker = ownSpeaker(loaded.state, user)
+  if (!speaker) throw new ApiError(404, 'SPEAKER_PROFILE_NOT_LINKED', 'No speaker profile in this event matches your authenticated email.')
+  await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'speaker',? WHERE EXISTS (SELECT 1 FROM workspaces WHERE id=?)`).bind(workspaceId, user.id, now(), workspaceId).run()
+  if (!['POST', 'PATCH'].includes(request.method)) throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST, PATCH' })
+  const body = await jsonBody(request, 100_000)
+  if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision !== loaded.row.revision) throw new ApiError(409, 'REVISION_CONFLICT', 'Proposal data has changed since it was loaded.', { expectedRevision: body.expectedRevision, currentRevision: loaded.row.revision })
+  const cfp = loaded.state.event?.cfp || {}
+  if (cfp.open === false || (cfp.closeAt && Number.isFinite(Date.parse(cfp.closeAt)) && Date.now() >= Date.parse(cfp.closeAt))) throw new ApiError(410, 'CFP_CLOSED', 'Proposal editing is locked because the call for proposals has closed.', { closeAt: cfp.closeAt })
+  const existing = submissionId ? (loaded.state.submissions || []).find((submission) => submission.id === submissionId) : undefined
+  if (submissionId && (!existing || !Array.isArray(existing.speakerIds) || !existing.speakerIds.includes(speaker.id))) throw new ApiError(403, 'SUBMISSION_FORBIDDEN', 'You may only edit your own proposals.')
+  if (existing && ['accepted', 'waitlisted', 'declined'].includes(existing.status)) throw new ApiError(409, 'SUBMISSION_LOCKED', 'A decided proposal can no longer be edited.')
+  const submit = body.action === 'submit'
+  const fields = speakerProposalFields(body, existing, loaded.state, submit)
+  const timestamp = now()
+  const proposal = {
+    ...(existing || {}),
+    id: existing?.id || id('proposal'),
+    ...fields,
+    speakerIds: existing?.speakerIds || [speaker.id],
+    status: existing?.status || 'needs-review',
+    lifecycle: submit ? 'submitted' : body.action === 'save-draft' ? 'draft' : existing?.lifecycle || 'draft',
+    origin: existing?.origin || 'cfp',
+    cfpVersion: existing?.cfpVersion || Number(cfp.version) || 1,
+    createdAt: existing?.createdAt || timestamp,
+    updatedAt: timestamp,
+  }
+  const nextState = { ...loaded.state, lastUpdatedAt: timestamp, submissions: existing ? loaded.state.submissions.map((item) => item.id === existing.id ? proposal : item) : [...loaded.state.submissions, proposal] }
+  validateAppStateDocument(nextState, eventId)
+  const updated = await persistStateRevision(env, { workspaceId, eventId, state: nextState, expectedRevision: body.expectedRevision, userId: user.id, timestamp, reason: submit ? 'speaker proposal submitted' : 'speaker proposal draft saved' })
+  if (!updated) throw new ApiError(409, 'REVISION_CONFLICT', 'Proposal data has changed since it was loaded.', { expectedRevision: body.expectedRevision })
+  await audit(env, workspaceId, user.id, submit ? 'speaker.proposal.submitted' : 'speaker.proposal.saved', 'submission', proposal.id, { eventId, lifecycle: proposal.lifecycle, revision: updated.revision }, requestId)
+  return json({ data: { revision: updated.revision, proposal } }, existing ? 200 : 201, request, env, requestId, { ETag: `"${updated.revision}"` })
 }
 
 function assignmentReviewerEmail(assignment) {
@@ -1396,16 +1560,27 @@ async function reviewerMutation(request, env, requestId, workspaceId, eventId) {
   const round = (Array.isArray(loaded.state.evaluationRounds) ? loaded.state.evaluationRounds : []).find((item) => item.id === assignment.roundId)
   const currentTime = Date.now()
   if (!round || round.status !== 'open' || (round.opensAt && Date.parse(round.opensAt) > currentTime) || !round.dueAt || Date.parse(round.dueAt) < currentTime) throw new ApiError(409, 'REVIEW_ROUND_CLOSED', 'This evaluation round is not currently open for reviews.')
-  const scores = body.review?.scores
-  if (!scores || typeof scores !== 'object' || Array.isArray(scores) || Object.keys(scores).length < 1 || Object.keys(scores).length > 20 || !Object.values(scores).every((score) => typeof score === 'number' && score >= 1 && score <= 5)) throw new ApiError(422, 'VALIDATION_ERROR', 'review.scores must contain 1–20 scores from 1 to 5.', { field: 'review.scores' })
   const rubric = Array.isArray(round.rubric) ? round.rubric : []
-  if (rubric.length > 0 && (Object.keys(scores).some((criterionId) => !rubric.some((criterion) => criterion.id === criterionId)) || rubric.some((criterion) => typeof scores[criterion.id] !== 'number' || scores[criterion.id] < 1 || scores[criterion.id] > criterion.maxScore))) throw new ApiError(422, 'VALIDATION_ERROR', 'review.scores must match the round rubric and score ranges.', { field: 'review.scores' })
+  const ratingCriteria = rubric.filter((criterion) => (criterion.type || 'rating') === 'rating')
+  const scores = body.review?.scores
+  if (!scores || typeof scores !== 'object' || Array.isArray(scores) || Object.keys(scores).length > 100 || !Object.values(scores).every((score) => typeof score === 'number' && Number.isFinite(score))) throw new ApiError(422, 'VALIDATION_ERROR', 'review.scores must be a numeric score map.', { field: 'review.scores' })
+  if (Object.keys(scores).some((criterionId) => !ratingCriteria.some((criterion) => criterion.id === criterionId)) || ratingCriteria.some((criterion) => criterion.required !== false && (typeof scores[criterion.id] !== 'number' || scores[criterion.id] < 1 || scores[criterion.id] > criterion.maxScore))) throw new ApiError(422, 'VALIDATION_ERROR', 'review.scores must match required numeric rubric criteria and ranges.', { field: 'review.scores' })
+  const answers = isRecord(body.review?.answers) ? body.review.answers : { ...scores }
+  if (Object.keys(answers).length > 100) throw new ApiError(422, 'VALIDATION_ERROR', 'review.answers contains too many values.', { field: 'review.answers' })
+  for (const criterion of rubric) {
+    const type = criterion.type || 'rating'
+    const answer = type === 'rating' ? scores[criterion.id] : answers[criterion.id]
+    if (criterion.required !== false && (answer === undefined || answer === null || String(answer).trim() === '')) throw new ApiError(422, 'VALIDATION_ERROR', `${criterion.label || 'A rubric answer'} is required.`, { field: `review.answers.${criterion.id}` })
+    if (answer === undefined || answer === null || answer === '') continue
+    if (type === 'select' && (!Array.isArray(criterion.options) || !criterion.options.includes(answer))) throw new ApiError(422, 'VALIDATION_ERROR', 'A dropdown answer is not one of the configured options.', { field: `review.answers.${criterion.id}` })
+    if (type === 'text' && (typeof answer !== 'string' || answer.length > 5000)) throw new ApiError(422, 'VALIDATION_ERROR', 'A text rubric answer must be at most 5,000 characters.', { field: `review.answers.${criterion.id}` })
+  }
   const note = typeof body.review.note === 'string' ? body.review.note.slice(0, 5000) : ''
   const status = body.assignmentStatus || (body.abstain === true ? 'abstained' : 'completed')
   if (!new Set(['assigned', 'in-progress', 'completed', 'abstained']).has(status)) throw new ApiError(422, 'VALIDATION_ERROR', 'Invalid assignment status.', { field: 'assignmentStatus' })
   const timestamp = now()
   const reviewId = `review-${assignment.id}`
-  const review = { id: reviewId, assignmentId: assignment.id, submissionId: body.submissionId, reviewerName: access.user.name || access.user.email, reviewerEmail: access.user.email, reviewerUserId: access.user.id, scores, note, abstained: body.abstain === true, updatedAt: timestamp }
+  const review = { id: reviewId, assignmentId: assignment.id, submissionId: body.submissionId, reviewerName: access.user.name || access.user.email, reviewerEmail: access.user.email, reviewerUserId: access.user.id, scores, answers: { ...answers, ...scores }, note, abstained: body.abstain === true, updatedAt: timestamp }
   const existingReviews = Array.isArray(loaded.state.reviews) ? loaded.state.reviews : []
   const reviewsWithoutAssignment = existingReviews.filter((item) => item.id !== reviewId && item.assignmentId !== assignment.id)
   const nextState = {
@@ -1642,6 +1817,8 @@ async function routeApi(request, env, requestId) {
   if (match) return publicSpeakerHeadshot(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), decodeURIComponent(match[3]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/session$/)
   if (match) return workspaceSession(request, env, requestId, decodeURIComponent(match[1]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events$/)
+  if (match) return workspaceEvents(request, env, requestId, decodeURIComponent(match[1]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/state\/history(?:\/(\d+))?$/)
   if (match) return eventStateHistory(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3])
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/state\/rollback$/)
@@ -1650,6 +1827,8 @@ async function routeApi(request, env, requestId) {
   if (match) return eventState(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/reviewer-queue$/)
   if (match) return reviewerQueue(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/speaker-portal\/submissions(?:\/([^/]+))?$/)
+  if (match) return speakerProposalMutation(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3] ? decodeURIComponent(match[3]) : undefined)
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/speaker-portal$/)
   if (match) return speakerPortal(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/reviews$/)

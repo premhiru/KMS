@@ -41,18 +41,61 @@ export function selectRoundAssignments(state: AppState, roundId: Id) {
 export function selectEligibleSubmissionsForRound(state: AppState, round: EvaluationRound): Submission[] {
   const filter = round.filter
   return state.submissions.filter((submission) => (
-    (!filter?.tracks?.length || filter.tracks.includes(submission.track))
+    submission.lifecycle !== 'draft'
+    && (!filter?.tracks?.length || filter.tracks.includes(submission.track))
     && (!filter?.formats?.length || filter.formats.includes(submission.format))
     && (!filter?.submissionStatuses?.length || filter.submissionStatuses.includes(submission.status))
   ))
 }
 
 export function weightedReviewAverage(round: Pick<EvaluationRound, 'rubric'>, review: Pick<Review, 'scores'>): number {
-  const weighted = round.rubric.filter((criterion) => criterion.weight > 0 && criterion.maxScore > 0 && Number.isFinite(review.scores[criterion.id]))
+  const weighted = round.rubric.filter((criterion) => (criterion.type ?? 'rating') === 'rating' && criterion.weight > 0 && criterion.maxScore > 0 && Number.isFinite(review.scores[criterion.id]))
   const totalWeight = weighted.reduce((sum, criterion) => sum + criterion.weight, 0)
   if (totalWeight === 0) return 0
   const normalized = weighted.reduce((sum, criterion) => sum + (Math.max(0, Math.min(criterion.maxScore, review.scores[criterion.id])) / criterion.maxScore) * criterion.weight, 0) / totalWeight
   return normalized * 5
+}
+
+export interface ReviewerProgress {
+  reviewerName: string
+  reviewerEmail: string
+  assigned: number
+  completed: number
+  abstained: number
+  remaining: number
+  percent: number
+}
+
+export function selectReviewerProgress(state: AppState, roundId: Id): ReviewerProgress[] {
+  const grouped = new Map<string, ReviewerProgress>()
+  for (const assignment of selectRoundAssignments(state, roundId)) {
+    const email = assignment.reviewerEmail.trim().toLowerCase()
+    const current = grouped.get(email) ?? { reviewerName: assignment.reviewerName, reviewerEmail: email, assigned: 0, completed: 0, abstained: 0, remaining: 0, percent: 0 }
+    current.assigned += 1
+    if (assignment.status === 'completed') current.completed += 1
+    if (assignment.status === 'abstained') current.abstained += 1
+    grouped.set(email, current)
+  }
+  return [...grouped.values()].map((row) => {
+    const terminal = row.completed + row.abstained
+    return { ...row, remaining: row.assigned - terminal, percent: row.assigned === 0 ? 0 : Math.round(terminal / row.assigned * 100) }
+  }).sort((left, right) => left.reviewerName.localeCompare(right.reviewerName) || left.reviewerEmail.localeCompare(right.reviewerEmail))
+}
+
+export interface RoundResultRow {
+  submission: Submission
+  reviewCount: number
+  aggregate?: number
+}
+
+export function selectRoundResults(state: AppState, roundId: Id): RoundResultRow[] {
+  const submissionIds = [...new Set(selectRoundAssignments(state, roundId).map((assignment) => assignment.submissionId))]
+  return submissionIds.flatMap((submissionId) => {
+    const submission = selectSubmission(state, submissionId)
+    if (!submission) return []
+    const reviews = state.reviews.filter((review) => review.roundId === roundId && review.submissionId === submissionId)
+    return [{ submission, reviewCount: reviews.length, aggregate: selectRoundSubmissionScore(state, roundId, submissionId) }]
+  })
 }
 
 export function selectWeightedReviewScore(state: AppState, review: Review): number {
@@ -133,7 +176,7 @@ export function selectOverdueTasks(state: AppState, now = new Date().toISOString
 }
 
 export function selectAcceptedSubmissions(state: AppState): Submission[] {
-  return state.submissions.filter((submission) => submission.status === 'accepted')
+  return state.submissions.filter((submission) => submission.lifecycle !== 'draft' && submission.status === 'accepted')
 }
 
 export function selectUnscheduledSubmissions(state: AppState): Submission[] {
@@ -168,9 +211,10 @@ export function selectAudienceSpeakerIds(state: AppState, audience: MessageAudie
 
 export function selectDashboardMetrics(state: AppState, now?: string) {
   const completedTasks = state.tasks.filter((task) => task.completedAt).length
+  const submitted = state.submissions.filter((submission) => submission.lifecycle !== 'draft')
   return {
-    totalSubmissions: state.submissions.length,
-    needsReview: state.submissions.filter((submission) => submission.status === 'needs-review' || submission.status === 'in-review').length,
+    totalSubmissions: submitted.length,
+    needsReview: submitted.filter((submission) => submission.status === 'needs-review' || submission.status === 'in-review').length,
     confirmedSpeakers: state.speakers.filter((speaker) => speaker.status === 'confirmed').length,
     acceptedSubmissions: selectAcceptedSubmissions(state).length,
     scheduledSessions: state.sessions.length,

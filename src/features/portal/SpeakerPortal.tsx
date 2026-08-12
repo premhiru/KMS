@@ -1,5 +1,5 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react'
-import { nowIso, selectOnboardingPercent, selectTasksForSpeaker, speakerName, useApp, useAppDispatch, useAppState } from '../../core'
+import { createId, nowIso, selectOnboardingPercent, selectTasksForSpeaker, speakerName, useApp, useAppDispatch, useAppState } from '../../core'
 import type { AssetMetadata, OnboardingTask, Speaker } from '../../domain'
 import './SpeakerPortal.css'
 import './portal-improvements.css'
@@ -69,6 +69,9 @@ function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (messa
     jobTitle: speaker.jobTitle,
     pronouns: speaker.pronouns ?? '',
     bio: speaker.bio,
+    twitterUrl: speaker.twitterUrl ?? '',
+    linkedinUrl: speaker.linkedinUrl ?? '',
+    travelPreferences: speaker.travelPreferences ?? '',
   })
 
   const save = (event: FormEvent<HTMLFormElement>) => {
@@ -85,6 +88,9 @@ function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (messa
         jobTitle: form.jobTitle.trim(),
         pronouns: form.pronouns.trim() || undefined,
         bio: form.bio.trim(),
+        twitterUrl: form.twitterUrl.trim() || undefined,
+        linkedinUrl: form.linkedinUrl.trim() || undefined,
+        travelPreferences: form.travelPreferences.trim() || undefined,
       },
       at,
     })
@@ -103,6 +109,9 @@ function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (messa
         <label>Company<input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></label>
         <label>Job title<input value={form.jobTitle} onChange={(event) => setForm({ ...form, jobTitle: event.target.value })} /></label>
         <label>Pronouns<input value={form.pronouns} onChange={(event) => setForm({ ...form, pronouns: event.target.value })} /></label>
+        <label>LinkedIn URL<input type="url" value={form.linkedinUrl} onChange={(event) => setForm({ ...form, linkedinUrl: event.target.value })} /></label>
+        <label>X / Twitter URL<input type="url" value={form.twitterUrl} onChange={(event) => setForm({ ...form, twitterUrl: event.target.value })} /></label>
+        <label>Travel preferences<input value={form.travelPreferences} onChange={(event) => setForm({ ...form, travelPreferences: event.target.value })} /></label>
       </div>
       <label>Biography<textarea required rows={5} maxLength={1200} value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} /><small>{form.bio.length} / 1,200 characters</small></label>
       <div className="portal-form-actions"><button className="portal-button portal-button-primary" type="submit">Save profile</button></div>
@@ -110,7 +119,7 @@ function ProfileForm({ speaker, announce }: { speaker: Speaker; announce: (messa
   )
 }
 
-function UploadControl({ task, announce }: { task: OnboardingTask; announce: (message: string) => void }) {
+function UploadControl({ task, speaker, announce }: { task: OnboardingTask; speaker: Speaker; announce: (message: string) => void }) {
   const { dispatch, persistenceMode, uploadAsset, downloadAsset } = useApp()
   const [uploading, setUploading] = useState(false)
   const isHeadshot = task.kind === 'headshot'
@@ -129,11 +138,11 @@ function UploadControl({ task, announce }: { task: OnboardingTask; announce: (me
       if (persistenceMode === 'remote') {
         const uploaded = await uploadAsset(file)
         const asset: AssetMetadata = { id: uploaded.id, name: uploaded.fileName, type: uploaded.contentType, size: uploaded.sizeBytes, selectedAt: uploaded.createdAt, storage: 'r2' }
-        dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, at })
+        dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, uploadedBy: speakerName(speaker), at })
         announce(`${file.name} uploaded to durable private storage.`)
       } else {
         const asset: AssetMetadata = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, selectedAt: at, storage: 'local-metadata' }
-        dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, at })
+        dispatch({ type: 'task/toggle', id: task.id, completed: true, asset, uploadedBy: speakerName(speaker), at })
         announce(`${file.name} metadata saved locally.`)
       }
     } catch (error) {
@@ -168,6 +177,7 @@ function UploadControl({ task, announce }: { task: OnboardingTask; announce: (me
         <span>{uploading ? 'Uploading…' : task.asset ? 'Choose a different file' : 'Choose file'}</span>
         <input type="file" accept={accept} disabled={uploading} onChange={chooseFile} />
       </label>
+      {(task.deliverableVersions?.length ?? 0) > 0 && <details><summary>Version history ({task.deliverableVersions?.length})</summary><ul>{task.deliverableVersions?.map((version) => <li key={version.id}>v{version.version} · {version.asset.name} · {version.uploadedBy} · {formatDate(version.uploadedAt)}</li>)}</ul></details>}
     </div>
   )
 }
@@ -181,6 +191,7 @@ function OnboardingChecklist({ speaker, announce }: { speaker: Speaker; announce
     dispatch({ type: 'task/toggle', id: task.id, completed, at: nowIso() })
     announce(`${task.title} ${completed ? 'completed' : 'reopened'}.`)
   }
+  const [comment, setComment] = useState<Record<string, string>>({})
 
   return (
     <section className="portal-card" aria-labelledby="portal-tasks-heading">
@@ -202,7 +213,9 @@ function OnboardingChecklist({ speaker, announce }: { speaker: Speaker; announce
                   <small>{task.completedAt ? `Completed ${formatDate(task.completedAt)}` : `Due ${formatDate(task.dueAt)}`}</small>
                 </label>
               </div>
-              {hasUpload && <UploadControl task={task} announce={announce} />}
+              {task.instructions && <p className="portal-task-instructions">{task.instructions}</p>}
+              {hasUpload && <UploadControl task={task} speaker={speaker} announce={announce} />}
+              {hasUpload && <form className="portal-comment" onSubmit={(event) => { event.preventDefault(); const body = comment[task.id]?.trim(); if (!body) return; dispatch({ type: 'task/comment', id: task.id, comment: { id: createId('comment'), authorName: speakerName(speaker), authorRole: 'speaker', body, createdAt: nowIso() } }); setComment({ ...comment, [task.id]: '' }); announce('Comment added.') }}><label>Comment for organizer<input value={comment[task.id] ?? ''} onChange={(event) => setComment({ ...comment, [task.id]: event.target.value })} /></label><button className="portal-button portal-button-secondary">Add comment</button>{task.comments?.map((item) => <p key={item.id}><strong>{item.authorName}:</strong> {item.body}</p>)}</form>}
             </li>
           )
         })}
@@ -210,6 +223,29 @@ function OnboardingChecklist({ speaker, announce }: { speaker: Speaker; announce
       <StorageNotice />
     </section>
   )
+}
+
+function ProposalWorkspace({ speaker, announce }: { speaker: Speaker; announce: (message: string) => void }) {
+  const { state, saveSpeakerProposal } = useApp()
+  const proposals = state.submissions.filter((item) => item.speakerIds.includes(speaker.id) && item.origin === 'cfp')
+  const [selectedId, setSelectedId] = useState(proposals[0]?.id ?? '')
+  const selected = proposals.find((item) => item.id === selectedId)
+  const [form, setForm] = useState(() => ({ title: selected?.title ?? '', abstract: selected?.abstract ?? '', track: selected?.track ?? state.event.tracks[0] ?? '', format: selected?.format ?? state.event.cfp?.formats?.[0]?.name ?? '', durationMinutes: selected?.durationMinutes ?? state.event.cfp?.formats?.[0]?.durationMinutes ?? 30, tags: selected?.tags.join(', ') ?? '', customAnswers: selected?.customAnswers ?? {} }))
+  const [saving, setSaving] = useState(false)
+  const cfp = state.event.cfp
+  const closed = !cfp?.open || new Date(cfp.closeAt) <= new Date()
+  const decided = selected ? ['accepted', 'waitlisted', 'declined'].includes(selected.status) : false
+  const locked = closed || decided
+  const choose = (id: string) => { const proposal = proposals.find((item) => item.id === id); setSelectedId(id); setForm({ title: proposal?.title ?? '', abstract: proposal?.abstract ?? '', track: proposal?.track ?? state.event.tracks[0] ?? '', format: proposal?.format ?? cfp?.formats?.[0]?.name ?? '', durationMinutes: proposal?.durationMinutes ?? cfp?.formats?.[0]?.durationMinutes ?? 30, tags: proposal?.tags.join(', ') ?? '', customAnswers: proposal?.customAnswers ?? {} }) }
+  const save = async (action: 'save-draft'|'submit') => { setSaving(true); try { const result = await saveSpeakerProposal({ action, title: form.title, abstract: form.abstract, track: form.track, format: form.format, durationMinutes: form.durationMinutes, tags: form.tags.split(',').map((item) => item.trim()).filter(Boolean), customAnswers: form.customAnswers }, selected?.id); setSelectedId(result.id); announce(action === 'submit' ? 'Proposal submitted for review.' : 'Proposal draft saved.') } catch (error) { announce(error instanceof Error ? error.message : 'Proposal could not be saved.') } finally { setSaving(false) } }
+  return <section className="portal-card portal-form" aria-labelledby="portal-proposals-heading"><div className="portal-card-heading"><div><p className="portal-kicker">Call for proposals</p><h2 id="portal-proposals-heading">My submissions</h2></div><span>{proposals.length} proposal{proposals.length === 1 ? '' : 's'}</span></div>{proposals.length > 0 && <label>Choose proposal<select value={selectedId} onChange={(event) => choose(event.target.value)}><option value="">New proposal</option>{proposals.map((proposal) => <option key={proposal.id} value={proposal.id}>{proposal.title} · {proposal.lifecycle ?? 'submitted'} · {proposal.status}</option>)}</select></label>}{locked && <p className="portal-storage-note"><strong>Editing locked:</strong> {decided ? `This proposal is ${selected?.status}.` : 'The call for proposals is closed.'}</p>}<fieldset disabled={locked || saving}><div className="portal-form-grid"><label>Title<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label>Track<select value={form.track} onChange={(event) => setForm({ ...form, track: event.target.value })}>{state.event.tracks.map((track) => <option key={track}>{track}</option>)}</select></label><label>Format<select value={form.format} onChange={(event) => { const format=cfp?.formats?.find((item)=>item.name===event.target.value); setForm({ ...form, format: event.target.value, durationMinutes: format?.durationMinutes ?? form.durationMinutes }) }}>{cfp?.formats?.map((format) => <option key={format.name}>{format.name}</option>)}</select></label><label>Duration (minutes)<input min="5" type="number" value={form.durationMinutes} onChange={(event) => setForm({ ...form, durationMinutes: Number(event.target.value) })} /></label></div><label>Abstract<textarea required rows={5} value={form.abstract} onChange={(event) => setForm({ ...form, abstract: event.target.value })} /></label><label>Tags, comma separated<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} /></label>{cfp?.questions.map((question) => <label key={question.id}>{question.label}{question.type === 'textarea' ? <textarea required={question.required} value={String(form.customAnswers[question.id] ?? '')} onChange={(event) => setForm({ ...form, customAnswers: { ...form.customAnswers, [question.id]: event.target.value } })} /> : question.type === 'select' ? <select required={question.required} value={String(form.customAnswers[question.id] ?? '')} onChange={(event) => setForm({ ...form, customAnswers: { ...form.customAnswers, [question.id]: event.target.value } })}><option value="">Choose…</option>{question.options?.map((option) => <option key={option}>{option}</option>)}</select> : <input required={question.required} value={String(form.customAnswers[question.id] ?? '')} onChange={(event) => setForm({ ...form, customAnswers: { ...form.customAnswers, [question.id]: event.target.value } })} />}</label>)}<p className="portal-storage-note"><strong>Participant:</strong> {speakerName(speaker)} ({speaker.email})</p><div className="portal-form-actions"><button className="portal-button portal-button-secondary" type="button" onClick={() => void save('save-draft')}>{saving ? 'Saving…' : 'Save draft'}</button><button className="portal-button portal-button-primary" type="button" onClick={() => void save('submit')}>{saving ? 'Submitting…' : 'Submit proposal'}</button></div></fieldset></section>
+}
+
+function MySessions({ speaker }: { speaker: Speaker }) {
+  const state = useAppState()
+  const submissions = state.submissions.filter((submission) => submission.speakerIds.includes(speaker.id))
+  const sessions = submissions.flatMap((submission) => state.sessions.filter((session) => session.submissionId === submission.id).map((session) => ({ submission, session })))
+  return <section className="portal-card"><div className="portal-card-heading"><div><p className="portal-kicker">Program</p><h2>My sessions</h2></div></div>{sessions.length ? <ul className="portal-task-list">{sessions.map(({ submission, session }) => <li key={session.id}><strong>{submission.title}</strong><small>{formatDate(session.startAt)} · {new Date(session.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · {session.room}</small></li>)}</ul> : <p className="portal-storage-note">Your scheduled sessions will appear here.</p>}</section>
 }
 
 function StorageNotice() {
@@ -260,8 +296,8 @@ function PortalWorkspace({ speaker }: { speaker: Speaker }) {
       </div>
       <AcceptanceCard speaker={speaker} announce={setAnnouncement} />
       <div className="portal-columns">
-        <div><ProfileForm speaker={speaker} announce={setAnnouncement} /></div>
-        <div><OnboardingChecklist speaker={speaker} announce={setAnnouncement} /><Resources /></div>
+        <div><ProfileForm speaker={speaker} announce={setAnnouncement} /><ProposalWorkspace speaker={speaker} announce={setAnnouncement} /></div>
+        <div><MySessions speaker={speaker} /><OnboardingChecklist speaker={speaker} announce={setAnnouncement} /><Resources /></div>
       </div>
     </>
   )

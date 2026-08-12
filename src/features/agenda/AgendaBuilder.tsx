@@ -197,6 +197,18 @@ export function AgendaBuilder() {
     setNotice('Agenda published to the public event page.')
   }
 
+  const conflictDescription = (conflict: (typeof conflicts)[number]) => {
+    const first = state.sessions.find((session) => session.id === conflict.sessionId)
+    const second = state.sessions.find((session) => session.id === conflict.otherSessionId)
+    const titles = [first, second].map((session) => session && sessionSubmission(state, session)?.title).filter(Boolean)
+    if (conflict.kind === 'speaker-overlap') {
+      const names = (conflict.speakerIds ?? []).map((id) => state.speakers.find((speaker) => speaker.id === id)).filter(Boolean).map((speaker) => speakerName(speaker!))
+      return `${names.join(', ') || 'A speaker'} is double-booked${titles.length ? ` across “${titles.join('” and “')}”` : ''}.`
+    }
+    if (conflict.kind === 'room-overlap' && titles.length > 1) return `${conflict.message} Clashing sessions: “${titles.join('” and “')}”.`
+    return conflict.message
+  }
+
   const renderSession = (session: Session) => {
     const submission = sessionSubmission(state, session)
     if (!submission) return null
@@ -222,7 +234,7 @@ export function AgendaBuilder() {
     {showIntegration && <AcceleventsMappingPanel />}
     <div className="agenda-toolbar"><div className="view-switch" aria-label="Agenda view">{(['list', 'day', 'week', 'track', 'room'] as const).map((item) => <button className={view === item ? 'active' : ''} key={item} onClick={() => setView(item)}>{item}</button>)}</div><span>{state.sessions.length} scheduled · {unscheduled.length} unscheduled · {conflicts.length} conflicts</span></div>
 
-    {conflicts.length > 0 && <aside className="conflict-panel" aria-label="Schedule conflicts"><h2><TriangleAlert size={18}/>Conflicts to resolve</h2>{conflicts.map((conflict, index) => <p key={`${conflict.kind}-${conflict.sessionId}-${index}`}><b>{conflict.kind.replaceAll('-', ' ')}</b>{conflict.message}</p>)}</aside>}
+    {conflicts.length > 0 && <aside className="conflict-panel" aria-label="Schedule conflicts"><h2><TriangleAlert size={18}/>Conflicts to resolve</h2>{conflicts.map((conflict, index) => <p key={`${conflict.kind}-${conflict.sessionId}-${index}`}><b>{conflict.kind.replaceAll('-', ' ')}</b>{conflictDescription(conflict)}</p>)}</aside>}
 
     <div className="agenda-workspace">
       <aside className="agenda-queue"><h2>Accepted & unscheduled <span>{unscheduled.length}</span></h2><p>Drag onto the day grid or use Assign.</p>{unscheduled.length === 0 && <div className="empty-state">Everything accepted is on the agenda.</div>}{unscheduled.map((submission) => <article key={submission.id} draggable onDragStart={(event) => event.dataTransfer.setData('text/openspeaker-submission', submission.id)}>

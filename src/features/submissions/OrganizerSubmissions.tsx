@@ -23,20 +23,21 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'all' | SubmissionStatus>('all')
   const [track, setTrack] = useState('all')
-  const [selectedId, setSelectedId] = useState<Id | undefined>(initialSelectedId ?? state.submissions[0]?.id)
+  const submitted = useMemo(() => state.submissions.filter((submission) => submission.lifecycle !== 'draft'), [state.submissions])
+  const [selectedId, setSelectedId] = useState<Id | undefined>(initialSelectedId ?? submitted[0]?.id)
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return state.submissions.filter((submission) => {
+    return submitted.filter((submission) => {
       const speakers = selectSubmissionSpeakers(state, submission.id)
       const haystack = [submission.title, submission.abstract, submission.track, submission.format, ...speakers.flatMap((speaker) => [speaker.firstName, speaker.lastName, speaker.email])].join(' ').toLowerCase()
       return (!needle || haystack.includes(needle))
         && (status === 'all' || submission.status === status)
         && (track === 'all' || submission.track === track)
     })
-  }, [query, state, status, track])
+  }, [query, state, status, submitted, track])
 
-  const selected = state.submissions.find((submission) => submission.id === selectedId)
+  const selected = submitted.find((submission) => submission.id === selectedId)
   const reviewCount = state.reviews.filter((review) => review.submissionId === selected?.id).length
 
   function decide(nextStatus: SubmissionStatus) {
@@ -52,9 +53,9 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
           <h1 id="organizer-submissions-title">Submissions</h1>
           <p>Search, edit, evaluate, and decide every proposal from one workspace.</p>
         </div>
-        <div className="sb-stat" aria-label={`${state.submissions.length} total submissions`}>
+        <div className="sb-stat" aria-label={`${submitted.length} total submissions`}>
           <FileText aria-hidden="true" />
-          <span><strong>{state.submissions.length}</strong> total</span>
+          <span><strong>{submitted.length}</strong> total</span>
         </div>
       </header>
 
@@ -122,7 +123,7 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
               onSave={(patch) => dispatch({ type: 'submission/update', id: selected.id, patch, at: new Date().toISOString() })}
               onDelete={() => {
                 dispatch({ type: 'submission/delete', id: selected.id, at: new Date().toISOString() })
-                setSelectedId(state.submissions.find((item) => item.id !== selected.id)?.id)
+                setSelectedId(submitted.find((item) => item.id !== selected.id)?.id)
               }}
               onDecide={decide}
               onOpenReview={onOpenReview ? () => onOpenReview(selected.id) : undefined}

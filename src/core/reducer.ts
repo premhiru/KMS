@@ -40,8 +40,9 @@ export type AppAction =
   | { type: 'evaluation/assignment/reopen'; id: Id; at?: string }
   | { type: 'evaluation/advance'; advancement: EvaluationAdvancement; assignments: EvaluationAssignment[]; at?: string }
   | { type: 'task/upsert'; task: OnboardingTask; at?: string }
-  | { type: 'task/toggle'; id: Id; completed: boolean; asset?: OnboardingTask['asset']; at?: string }
+  | { type: 'task/toggle'; id: Id; completed: boolean; asset?: OnboardingTask['asset']; uploadedBy?: string; at?: string }
   | { type: 'task/review'; id: Id; status: NonNullable<OnboardingTask['approvalStatus']>; note?: string; at?: string }
+  | { type: 'task/comment'; id: Id; comment: NonNullable<OnboardingTask['comments']>[number]; at?: string }
   | { type: 'session/upsert'; session: Session; at?: string }
   | { type: 'session/delete'; id: Id; at?: string }
   | { type: 'agenda/publish'; published: boolean; at?: string }
@@ -243,21 +244,38 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'task/upsert':
       return touch(state, at, { tasks: upsert(state.tasks, { ...action.task, updatedAt: at }) })
     case 'task/toggle':
-      return touch(state, at, { tasks: state.tasks.map((task) => task.id === action.id ? {
-        ...task,
-        completedAt: action.completed ? at : undefined,
-        asset: action.asset ?? task.asset,
-        assetVersion: action.asset ? (task.assetVersion ?? 0) + 1 : task.assetVersion,
-        approvalStatus: action.asset ? 'pending' : task.approvalStatus,
-        approvedAt: action.asset ? undefined : task.approvedAt,
-        updatedAt: at,
-      } : task) })
+      return touch(state, at, { tasks: state.tasks.map((task) => {
+        if (task.id !== action.id) return task
+        const version = action.asset ? Math.max(task.assetVersion ?? 0, task.deliverableVersions?.at(-1)?.version ?? 0) + 1 : task.assetVersion
+        return {
+          ...task,
+          completedAt: action.completed ? at : undefined,
+          asset: action.asset ?? task.asset,
+          assetVersion: version,
+          deliverableVersions: action.asset ? [...(task.deliverableVersions ?? []), {
+            id: action.asset.id ?? `deliverable-${task.id}-${version}`,
+            asset: action.asset,
+            version: version ?? 1,
+            uploadedAt: action.asset.selectedAt,
+            uploadedBy: action.uploadedBy?.trim() || 'Speaker',
+          }] : task.deliverableVersions,
+          approvalStatus: action.asset ? 'pending' : task.approvalStatus,
+          approvedAt: action.asset ? undefined : task.approvedAt,
+          updatedAt: at,
+        }
+      }) })
     case 'task/review':
       return touch(state, at, { tasks: state.tasks.map((task) => task.id === action.id ? {
         ...task,
         approvalStatus: action.status,
         approvedAt: action.status === 'approved' ? at : undefined,
         reviewerNote: action.note?.trim() || undefined,
+        updatedAt: at,
+      } : task) })
+    case 'task/comment':
+      return touch(state, at, { tasks: state.tasks.map((task) => task.id === action.id ? {
+        ...task,
+        comments: [...(task.comments ?? []), action.comment],
         updatedAt: at,
       } : task) })
     case 'session/upsert':

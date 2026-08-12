@@ -40,6 +40,11 @@ import type {
   WorkspaceRole,
   WorkspaceSession,
   SpeakerPortalPatch,
+  CreateWorkspaceEventInput,
+  CreateWorkspaceEventReceipt,
+  SpeakerProposalMutationInput,
+  SpeakerProposalMutationReceipt,
+  WorkspaceEventList,
 } from './contracts'
 import {
   isRecord,
@@ -309,6 +314,18 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
     })
   }
 
+  saveSpeakerProposal(input: SpeakerProposalMutationInput, submissionId?: string, options: RequestOptions = {}): Promise<SpeakerProposalMutationReceipt> {
+    return this.transport.request({
+      path: this.eventPath(`speaker-portal/submissions${submissionId ? `/${segment(submissionId)}` : ''}`), method: submissionId ? 'PATCH' : 'POST', body: input, headers: { 'if-match': `"${input.expectedRevision}"` },
+      signal: options.signal, timeoutMs: options.timeoutMs,
+      parse: (value) => {
+        const data = unwrapData(value)
+        if (!isRecord(data) || !Number.isSafeInteger(data.revision) || !isRecord(data.proposal)) throw new ResponseValidationError(['speaker proposal receipt is invalid.'])
+        return { revision: data.revision as number, proposal: data.proposal as unknown as SpeakerProposalMutationReceipt['proposal'] }
+      },
+    })
+  }
+
   getReviewerQueue(options: RequestOptions = {}): Promise<ReviewerQueue> {
     return this.transport.request({
       path: this.eventPath('reviewer-queue'), signal: options.signal, timeoutMs: options.timeoutMs,
@@ -326,6 +343,22 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
 
   getSession(options: RequestOptions = {}): Promise<WorkspaceSession> {
     return this.transport.request({ path: this.workspacePath('session'), signal: options.signal, timeoutMs: options.timeoutMs, parse: parseWorkspaceSession })
+  }
+
+  listEvents(options: RequestOptions = {}): Promise<WorkspaceEventList> {
+    return this.transport.request({ path: this.workspacePath('events'), signal: options.signal, timeoutMs: options.timeoutMs, parse: (value) => {
+      const data = unwrapData(value)
+      if (!isRecord(data) || !Array.isArray(data.events)) throw new ResponseValidationError(['workspace event list is invalid.'])
+      return { events: data.events as WorkspaceEventList['events'] }
+    } })
+  }
+
+  createEvent(input: CreateWorkspaceEventInput, options: RequestOptions = {}): Promise<CreateWorkspaceEventReceipt> {
+    return this.transport.request({ path: this.workspacePath('events'), method: 'POST', body: input, signal: options.signal, timeoutMs: options.timeoutMs, parse: (value) => {
+      const data = unwrapData(value)
+      if (!isRecord(data) || !isRecord(data.event)) throw new ResponseValidationError(['workspace event creation receipt is invalid.'])
+      return { event: data.event as unknown as CreateWorkspaceEventReceipt['event'] }
+    } })
   }
 
   /** Hosting supplies identity headers. This probes authentication/authorization without a fictional login endpoint. */

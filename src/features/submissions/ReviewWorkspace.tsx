@@ -70,7 +70,7 @@ export function ReviewWorkspace({
 
   async function saveReview(review: Review) {
     if (session?.role === 'reviewer' && review.assignmentId) {
-      await submitAssignedReview({ assignmentId: review.assignmentId, submissionId: review.submissionId, review: { scores: review.scores, note: review.note }, assignmentStatus: 'completed' })
+      await submitAssignedReview({ assignmentId: review.assignmentId, submissionId: review.submissionId, review: { scores: review.scores, answers: review.answers, note: review.note }, assignmentStatus: 'completed' })
       return
     }
     dispatch({ type: 'review/upsert', review, at: nowIso() })
@@ -149,12 +149,13 @@ interface AssignmentReviewEditorProps {
 }
 
 function initialScores(round: EvaluationRound, review?: Review): Record<string, number> {
-  return Object.fromEntries(round.rubric.map((criterion) => [criterion.id, review?.scores[criterion.id] ?? Math.ceil(criterion.maxScore / 2)]))
+  return Object.fromEntries(round.rubric.filter((criterion) => (criterion.type ?? 'rating') === 'rating').map((criterion) => [criterion.id, review?.scores[criterion.id] ?? Math.ceil(criterion.maxScore / 2)]))
 }
 
 function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, onAbstain, onReopen, onDecide }: AssignmentReviewEditorProps) {
   const existing = reviews.find((review) => review.assignmentId === item.assignment.id)
   const [scores, setScores] = useState<Record<string, number>>(() => initialScores(item.round, existing))
+  const [answers, setAnswers] = useState<Record<string, number | string>>(() => ({ ...initialScores(item.round, existing), ...existing?.answers }))
   const [note, setNote] = useState(existing?.note ?? '')
   const [abstainReason, setAbstainReason] = useState(item.assignment.abstainReason ?? '')
   const [error, setError] = useState('')
@@ -166,8 +167,10 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!reviewOpen) { setError('This round is not currently open for reviews.'); return }
+    const missing = item.round.rubric.find((criterion) => criterion.required !== false && (answers[criterion.id] === undefined || String(answers[criterion.id]).trim() === ''))
+    if (missing) { setError(`${missing.label} is required.`); return }
     try {
-      await onSave({ id: existing?.id ?? createId('review'), submissionId: item.submission.id, roundId: item.round.id, assignmentId: item.assignment.id, reviewerName: item.assignment.reviewerName || fallbackReviewerName || item.assignment.reviewerEmail, scores, note: note.trim(), updatedAt: nowIso() })
+      await onSave({ id: existing?.id ?? createId('review'), submissionId: item.submission.id, roundId: item.round.id, assignmentId: item.assignment.id, reviewerName: item.assignment.reviewerName || fallbackReviewerName || item.assignment.reviewerEmail, scores, answers, note: note.trim(), updatedAt: nowIso() })
       setError('')
       setSaved(true)
       window.setTimeout(() => setSaved(false), 1600)
@@ -216,9 +219,11 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
             {item.round.rubric.map((criterion) => (
               <fieldset key={criterion.id}>
                 <legend><strong>{criterion.label} <small>({criterion.weight}% weight)</small></strong>{criterion.description && <small>{criterion.description}</small>}</legend>
-                <div className="sb-rating">
-                  {Array.from({ length: criterion.maxScore }, (_, index) => index + 1).map((value) => <label key={value} className={scores[criterion.id] === value ? 'is-selected' : ''}><input type="radio" name={`${item.assignment.id}-${criterion.id}`} value={value} checked={scores[criterion.id] === value} onChange={() => setScores((current) => ({ ...current, [criterion.id]: value }))} /><Star aria-hidden="true" /><span>{value}</span></label>)}
-                </div>
+                {(criterion.type ?? 'rating') === 'rating' && <div className="sb-rating">
+                  {Array.from({ length: criterion.maxScore }, (_, index) => index + 1).map((value) => <label key={value} className={scores[criterion.id] === value ? 'is-selected' : ''}><input type="radio" name={`${item.assignment.id}-${criterion.id}`} value={value} checked={scores[criterion.id] === value} onChange={() => { setScores((current) => ({ ...current, [criterion.id]: value })); setAnswers((current) => ({ ...current, [criterion.id]: value })) }} /><Star aria-hidden="true" /><span>{value}</span></label>)}
+                </div>}
+                {criterion.type === 'select' && <select required={criterion.required !== false} value={String(answers[criterion.id] ?? '')} onChange={(event) => setAnswers((current) => ({ ...current, [criterion.id]: event.target.value }))}><option value="">Select an option</option>{(criterion.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}</select>}
+                {criterion.type === 'text' && <textarea required={criterion.required !== false} rows={4} value={String(answers[criterion.id] ?? '')} onChange={(event) => setAnswers((current) => ({ ...current, [criterion.id]: event.target.value }))} />}
               </fieldset>
             ))}
           </div>
@@ -231,7 +236,7 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
       <section className="sb-round-history" aria-labelledby={`history-${item.assignment.id}`}>
         <div className="sb-card__header"><div><p className="sb-eyebrow">Round history</p><h3 id={`history-${item.assignment.id}`}>{item.round.name} reviews</h3></div></div>
         {reviews.length === 0 && <p className="sb-muted">No completed reviews in this round.</p>}
-        {reviews.map((review) => <article key={review.id}><div><strong>{review.reviewerName}</strong><span>{weightedReviewAverage(item.round, review).toFixed(2)} / 5</span></div><dl>{item.round.rubric.map((criterion) => <div key={criterion.id}><dt>{criterion.label}</dt><dd>{review.scores[criterion.id] ?? '—'}</dd></div>)}</dl>{review.note && <p>{review.note}</p>}</article>)}
+        {reviews.map((review) => <article key={review.id}><div><strong>{review.reviewerName}</strong><span>{weightedReviewAverage(item.round, review).toFixed(2)} / 5</span></div><dl>{item.round.rubric.map((criterion) => <div key={criterion.id}><dt>{criterion.label}</dt><dd>{review.answers?.[criterion.id] ?? review.scores[criterion.id] ?? '—'}</dd></div>)}</dl>{review.note && <p>{review.note}</p>}</article>)}
       </section>
 
       {onDecide && <section className="sb-decision sb-decision--review" aria-labelledby={`final-decision-${item.submission.id}`}>

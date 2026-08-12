@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { appReducer } from '../core/reducer'
-import { selectEvaluationRoundProgress, selectReviewerQueue, weightedReviewAverage } from '../core/selectors'
+import { reviewResultsToCsv } from '../core/csv'
+import { selectDashboardMetrics, selectEligibleSubmissionsForRound, selectEvaluationRoundProgress, selectReviewerProgress, selectReviewerQueue, selectRoundResults, weightedReviewAverage } from '../core/selectors'
 import { createSeedState } from './seed'
 import type { EvaluationAdvancement, EvaluationAssignment, EvaluationRound, Review } from './types'
 
@@ -14,6 +15,33 @@ describe('evaluation workflow', () => {
     } satisfies Pick<EvaluationRound, 'rubric'>
     const review = { scores: { impact: 5, risk: 1 } } satisfies Pick<Review, 'scores'>
     expect(weightedReviewAverage(round, review)).toBe(4)
+  })
+
+  it('ignores qualitative criteria in weighting while retaining them in detailed exports', () => {
+    const state = createSeedState()
+    const round = state.evaluationRounds![0]
+    round.rubric.push({ id: 'recommendation', label: 'Recommendation', type: 'select', options: ['Accept', 'Reject'], required: true, weight: 10, maxScore: 5 })
+    const review = state.reviews.find((item) => item.roundId === round.id)!
+    review.answers = { ...review.scores, recommendation: 'Accept' }
+    expect(weightedReviewAverage(round, review)).toBeGreaterThan(0)
+    expect(reviewResultsToCsv(state, round.id)).toContain('Recommendation,Accept')
+  })
+
+  it('groups reviewer completion and produces sortable result rows', () => {
+    const state = createSeedState()
+    const roundId = state.evaluationRounds![0].id
+    expect(selectReviewerProgress(state, roundId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reviewerEmail: 'sarah@example.com', assigned: 3, completed: 2, remaining: 1 }),
+    ]))
+    expect(selectRoundResults(state, roundId).some((row) => row.reviewCount > 0 && row.aggregate !== undefined)).toBe(true)
+  })
+
+  it('keeps speaker drafts out of organizer metrics and review eligibility', () => {
+    const state = createSeedState()
+    const draft = { ...state.submissions[0], id: 'draft-proposal', lifecycle: 'draft' as const }
+    state.submissions.push(draft)
+    expect(selectDashboardMetrics(state).totalSubmissions).toBe(state.submissions.length - 1)
+    expect(selectEligibleSubmissionsForRound(state, state.evaluationRounds![0]).some((submission) => submission.id === draft.id)).toBe(false)
   })
 
   it('removes speaker identity from a blind reviewer queue', () => {

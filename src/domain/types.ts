@@ -100,6 +100,23 @@ export interface PublicProgramConfig {
   embedHeight: number
 }
 
+export interface EventEmbedDefinition {
+  id: Id
+  name: string
+  type: 'sessions' | 'speakers' | 'agenda' | 'itinerary' | 'gallery'
+  format: 'styled-html' | 'basic-html' | 'json' | 'xml' | 'ical'
+  enabled: boolean
+  accentColor: string
+  backgroundColor: string
+  customCss: string
+  track?: string
+  sessionFormat?: string
+  room?: string
+  visibleFields: string[]
+  createdAt: ISODateTime
+  updatedAt: ISODateTime
+}
+
 export interface AcceleventsMapping {
   sessionTitle: 'title'
   description: 'abstract'
@@ -132,6 +149,7 @@ export interface EventConfig {
   resources?: ResourcePage[]
   reminderSchedules?: ReminderSchedule[]
   publicProgram?: PublicProgramConfig
+  embeds?: EventEmbedDefinition[]
   accelevents?: AcceleventsMapping
 }
 
@@ -149,6 +167,22 @@ export interface AssetMetadata {
   storage?: 'local-metadata' | 'r2'
 }
 
+export interface DeliverableVersion {
+  id: Id
+  asset: AssetMetadata
+  version: number
+  uploadedAt: ISODateTime
+  uploadedBy: string
+}
+
+export interface DeliverableComment {
+  id: Id
+  authorName: string
+  authorRole: 'speaker' | 'organizer'
+  body: string
+  createdAt: ISODateTime
+}
+
 export interface Speaker {
   id: Id
   firstName: string
@@ -159,6 +193,9 @@ export interface Speaker {
   bio: string
   pronouns?: string
   photoUrl?: string
+  twitterUrl?: string
+  linkedinUrl?: string
+  travelPreferences?: string
   status: SpeakerStatus
   availability: AvailabilityWindow[]
   createdAt: ISODateTime
@@ -174,6 +211,8 @@ export interface Submission {
   durationMinutes: number
   speakerIds: Id[]
   status: SubmissionStatus
+  /** Speaker-owned working state; omitted legacy records are submitted. */
+  lifecycle?: 'draft' | 'submitted'
   tags: string[]
   createdAt: ISODateTime
   updatedAt: ISODateTime
@@ -194,6 +233,8 @@ export interface Review {
   roundId?: Id
   assignmentId?: Id
   scores: Record<string, number>
+  /** Typed rubric answers. Numeric answers are mirrored in scores for backwards compatibility. */
+  answers?: Record<string, number | string>
   note: string
   updatedAt: ISODateTime
 }
@@ -204,7 +245,17 @@ export interface RubricCriterion {
   description?: string
   /** Relative weight. A round's positive weights are normalized at scoring time. */
   weight: number
+  /** Omitted by legacy data and interpreted as a numeric rating. */
+  type?: 'rating' | 'select' | 'text'
   maxScore: number
+  /** Required for select criteria and ignored by numeric/text criteria. */
+  options?: string[]
+  required?: boolean
+}
+
+export interface EvaluationReviewer {
+  name: string
+  email: string
 }
 
 export interface EvaluationPlan {
@@ -232,6 +283,8 @@ export interface EvaluationRound {
   blind: boolean
   instructions: string
   rubric: RubricCriterion[]
+  /** Reviewers eligible for this round, independent of individual assignments. */
+  reviewerPool?: EvaluationReviewer[]
   filter?: EvaluationRoundFilter
   createdAt: ISODateTime
   updatedAt: ISODateTime
@@ -266,6 +319,8 @@ export interface OnboardingTask {
   speakerId: Id
   kind: TaskKind
   title: string
+  instructions?: string
+  submissionId?: Id
   dueAt: ISODateTime
   completedAt?: ISODateTime
   asset?: AssetMetadata
@@ -273,6 +328,8 @@ export interface OnboardingTask {
   approvalStatus?: ApprovalStatus
   approvedAt?: ISODateTime
   reviewerNote?: string
+  deliverableVersions?: DeliverableVersion[]
+  comments?: DeliverableComment[]
   updatedAt: ISODateTime
 }
 
@@ -346,6 +403,9 @@ export interface SpeakerInput {
   bio?: string
   pronouns?: string
   photoUrl?: string
+  twitterUrl?: string
+  linkedinUrl?: string
+  travelPreferences?: string
   status?: SpeakerStatus
   availability?: AvailabilityWindow[]
 }
