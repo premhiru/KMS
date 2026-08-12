@@ -140,9 +140,9 @@ export function createSeedState(): AppState {
     ],
     tasks: structuredClone(tasks),
     sessions: [
-      { id: 'session-agents', submissionId: 'submission-agents', room: 'Main stage', startAt: '2026-09-16T17:00:00.000Z', endAt: '2026-09-16T17:30:00.000Z', published: true, updatedAt: SEEDED_AT },
-      { id: 'session-evals', submissionId: 'submission-evals', room: 'Studio A', startAt: '2026-09-16T17:00:00.000Z', endAt: '2026-09-16T17:30:00.000Z', published: true, updatedAt: SEEDED_AT },
-      { id: 'session-design', submissionId: 'submission-design', room: 'Studio A', startAt: '2026-09-16T18:00:00.000Z', endAt: '2026-09-16T19:00:00.000Z', published: true, updatedAt: SEEDED_AT },
+      { id: 'session-agents', submissionId: 'submission-agents', room: 'Main stage', startAt: '2026-09-16T17:00:00.000Z', endAt: '2026-09-16T17:30:00.000Z', published: true, contentStatus: 'approved', updatedAt: SEEDED_AT },
+      { id: 'session-evals', submissionId: 'submission-evals', room: 'Studio A', startAt: '2026-09-16T17:00:00.000Z', endAt: '2026-09-16T17:30:00.000Z', published: true, contentStatus: 'approved', updatedAt: SEEDED_AT },
+      { id: 'session-design', submissionId: 'submission-design', room: 'Studio A', startAt: '2026-09-16T18:00:00.000Z', endAt: '2026-09-16T19:00:00.000Z', published: true, contentStatus: 'approved', updatedAt: SEEDED_AT },
     ],
     templates: [
       { id: 'template-acceptance', name: 'Acceptance email', subject: 'You are speaking at {{event.name}}!', body: 'Hi {{speaker.firstName}},\n\nWe are delighted to accept “{{submission.title}}”. Please visit your speaker portal to complete onboarding.', audience: 'accepted', enabled: true, updatedAt: SEEDED_AT },

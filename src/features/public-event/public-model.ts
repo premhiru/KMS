@@ -10,7 +10,7 @@ export interface PublicSessionRecord {
 
 export function publicSessionRecords(state: AppState): PublicSessionRecord[] {
   return state.sessions
-    .filter((session) => session.published)
+    .filter((session) => session.published && (session.contentStatus ?? 'approved') === 'approved')
     .map((session) => {
       const submission = state.submissions.find((item) => item.id === session.submissionId)
       if (!submission || submission.status !== 'accepted') return undefined

@@ -340,6 +340,8 @@ export interface Session {
   startAt: ISODateTime
   endAt: ISODateTime
   published: boolean
+  /** Legacy sessions without this field are treated as approved. */
+  contentStatus?: 'draft' | 'in-review' | 'approved'
   updatedAt: ISODateTime
 }
 

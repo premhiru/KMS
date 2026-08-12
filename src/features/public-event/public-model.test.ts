@@ -24,4 +24,10 @@ describe('public widget projection', () => {
   it('creates stable event-local day keys', () => {
     expect(localDay('2026-09-16T17:00:00.000Z', 'America/Los_Angeles')).toBe('2026-09-16')
   })
+
+  it('keeps draft and in-review session content out of every public widget', () => {
+    const state = createSeedState()
+    state.sessions[0] = { ...state.sessions[0], contentStatus: 'in-review', published: true }
+    expect(publicSessionRecords(state).some((record) => record.session.id === state.sessions[0].id)).toBe(false)
+  })
 })

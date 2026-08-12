@@ -273,6 +273,7 @@ export function validateAppStateDocument(state, expectedEventId) {
     for (const field of ['submissionId', 'room', 'startAt', 'endAt', 'updatedAt']) stateString(session, field, path, errors, 500)
     if (!submissionIds.has(session.submissionId)) errors.push(`${path}.submissionId must reference a known submission.`)
     if (typeof session.published !== 'boolean') errors.push(`${path}.published must be boolean.`)
+    if (session.contentStatus !== undefined && !['draft', 'in-review', 'approved'].includes(session.contentStatus)) errors.push(`${path}.contentStatus is invalid.`)
     stateDate(session, 'startAt', path, errors)
     stateDate(session, 'endAt', path, errors)
     stateDate(session, 'updatedAt', path, errors)
@@ -658,7 +659,7 @@ export function sanitizePublicState(state, workspaceId, eventSlug) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) return {}
   const submissions = Array.isArray(state.submissions) ? state.submissions.filter((submission) => submission?.status === 'accepted') : []
   const acceptedIds = new Set(submissions.map((submission) => submission.id))
-  const sessions = Array.isArray(state.sessions) ? state.sessions.filter((session) => session?.published === true && acceptedIds.has(session.submissionId)) : []
+  const sessions = Array.isArray(state.sessions) ? state.sessions.filter((session) => session?.published === true && (session.contentStatus === undefined || session.contentStatus === 'approved') && acceptedIds.has(session.submissionId)) : []
   const publishedSubmissionIds = new Set(sessions.map((session) => session.submissionId))
   const publicSubmissions = submissions.filter((submission) => publishedSubmissionIds.has(submission.id))
   const speakerIds = new Set(publicSubmissions.flatMap((submission) => Array.isArray(submission.speakerIds) ? submission.speakerIds : []))
@@ -1119,7 +1120,7 @@ function organizerEmail(value) {
 
 export function speakerCalendarInvite(state, speaker, emailFrom, timestamp = now()) {
   const submissions = new Map((state.submissions || []).filter((submission) => submission?.status === 'accepted' && (submission.speakerIds || []).includes(speaker.id)).map((submission) => [submission.id, submission]))
-  const sessions = (state.sessions || []).filter((session) => session?.published === true && submissions.has(session.submissionId) && calendarDate(session.startAt) && calendarDate(session.endAt))
+  const sessions = (state.sessions || []).filter((session) => session?.published === true && (session.contentStatus === undefined || session.contentStatus === 'approved') && submissions.has(session.submissionId) && calendarDate(session.startAt) && calendarDate(session.endAt))
   if (sessions.length === 0) return null
   const organizer = organizerEmail(emailFrom)
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//OpenSpeaker//Speaker Schedule//EN', 'CALSCALE:GREGORIAN', 'METHOD:REQUEST']
@@ -1267,7 +1268,7 @@ export function acceleventsReadModel(state, eventId) {
   const accepted = (state.submissions || []).filter((submission) => submission.status === 'accepted')
   const acceptedIds = new Set(accepted.map((submission) => submission.id))
   const submissionById = new Map(accepted.map((submission) => [submission.id, submission]))
-  const sessions = (state.sessions || []).filter((session) => acceptedIds.has(session.submissionId) && (mapping.includeOnlyPublishedSessions === false || session.published)).map((session) => {
+  const sessions = (state.sessions || []).filter((session) => acceptedIds.has(session.submissionId) && (session.contentStatus === undefined || session.contentStatus === 'approved') && (mapping.includeOnlyPublishedSessions === false || session.published)).map((session) => {
     const submission = submissionById.get(session.submissionId)
     return {
       id: session.id,

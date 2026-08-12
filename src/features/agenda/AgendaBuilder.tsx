@@ -147,6 +147,7 @@ export function AgendaBuilder() {
       startAt: targetStart,
       endAt: endFor(targetStart, submission.durationMinutes),
       published: false,
+      contentStatus: 'draft',
       updatedAt: at,
     }
     dispatch({ type: 'session/upsert', session, at })
@@ -170,7 +171,7 @@ export function AgendaBuilder() {
         for (const candidateRoom of state.event.rooms) {
           const candidate: Session = {
             id: createId('session'), submissionId: submission.id, room: candidateRoom,
-            startAt: candidateStart, endAt: endFor(candidateStart, submission.durationMinutes), published: false, updatedAt: nowIso(),
+            startAt: candidateStart, endAt: endFor(candidateStart, submission.durationMinutes), published: false, contentStatus: 'draft', updatedAt: nowIso(),
           }
           if (conflictsForSession(candidate, draft).length === 0) {
             selected = candidate
@@ -190,6 +191,10 @@ export function AgendaBuilder() {
   const publish = () => {
     if (!canPublishAgenda(state)) {
       setNotice('Resolve every conflict before publishing the agenda.')
+      return
+    }
+    if (state.sessions.some((session) => (session.contentStatus ?? 'approved') !== 'approved')) {
+      setNotice('Approve every session’s content before publishing the agenda.')
       return
     }
     const at = nowIso()
@@ -215,7 +220,7 @@ export function AgendaBuilder() {
     return <article draggable onDragStart={(event) => event.dataTransfer.setData('text/openspeaker-submission', submission.id)} className={`agenda-session ${conflicts.some((conflict) => conflict.sessionId === session.id || conflict.otherSessionId === session.id) ? 'has-conflict' : ''}`} key={session.id}>
       <div><span>{submission.track}</span><strong>{submission.title}</strong><small>{selectSubmissionSpeakers(state, submission.id).map(speakerName).join(', ')}</small></div>
       <p><MapPin size={14}/>{session.room}<CalendarDays size={14}/>{formatDateTime(session.startAt, state.event.timezone)}–{formatTime(session.endAt, state.event.timezone)}</p>
-      <div className="agenda-session-actions"><button onClick={() => openAssignment(submission.id, session.room, session.startAt)}>Move</button><button onClick={() => dispatch({ type: 'session/delete', id: session.id, at: nowIso() })}>Unschedule</button></div>
+      <div className="agenda-session-actions"><label>Content <select aria-label={`Content approval for ${submission.title}`} value={session.contentStatus ?? 'approved'} onChange={(event) => dispatch({ type: 'session/upsert', session: { ...session, contentStatus: event.target.value as NonNullable<Session['contentStatus']>, published: event.target.value === 'approved' ? session.published : false, updatedAt: nowIso() }, at: nowIso() })}><option value="draft">Draft</option><option value="in-review">In review</option><option value="approved">Approved</option></select></label><button onClick={() => openAssignment(submission.id, session.room, session.startAt)}>Move</button><button onClick={() => dispatch({ type: 'session/delete', id: session.id, at: nowIso() })}>Unschedule</button></div>
     </article>
   }
 
@@ -227,7 +232,7 @@ export function AgendaBuilder() {
       <button className="feature-button secondary" title="One-way CSV export; API sync requires Accelevents credentials." onClick={() => downloadCsv(`${state.event.slug}-accelevents.csv`, agendaToAcceleventsCsv(state))}><Download size={16}/>Accelevents-ready CSV</button>
       {persistenceMode === 'remote' && <button className="feature-button secondary" disabled={!acceleventsConfigured || syncing} title={acceleventsConfigured ? 'Sync accepted, published sessions and confirmed speakers one way.' : 'Configure ACCELEVENTS_API_KEY and ACCELEVENTS_EVENT_URL.'} onClick={syncAccelevents}><UploadCloud size={16}/>{syncing ? 'Syncing…' : 'Sync Accelevents'}</button>}
       <button className="feature-button secondary" aria-expanded={showIntegration} aria-controls="accelevents-mapping" onClick={() => setShowIntegration((open) => !open)}>Mapping</button>
-      <button className="feature-button primary" disabled={conflicts.length > 0 || state.sessions.length === 0} onClick={publish}><UploadCloud size={16}/>Publish agenda</button>
+      <button className="feature-button primary" disabled={conflicts.length > 0 || state.sessions.length === 0 || state.sessions.some((session) => (session.contentStatus ?? 'approved') !== 'approved')} title={state.sessions.some((session) => (session.contentStatus ?? 'approved') !== 'approved') ? 'Approve every session before publishing.' : undefined} onClick={publish}><UploadCloud size={16}/>Publish agenda</button>
     </div></header>
 
     {notice && <div className="feature-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={14}/></button></div>}
