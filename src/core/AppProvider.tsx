@@ -59,7 +59,7 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     eventId: new URLSearchParams(window.location.search).get('eventId') || import.meta.env.VITE_EVENT_ID || seedState.event.id,
     eventSlug: new URLSearchParams(window.location.search).get('eventSlug') || import.meta.env.VITE_EVENT_SLUG || seedState.event.slug,
   }) : undefined, [remote, seedState.event.id, seedState.event.slug])
-  const [persistenceMode, setPersistenceMode] = useState<'local' | 'remote' | 'public-readonly'>(remote ? 'remote' : 'local')
+  const [persistenceMode, setPersistenceMode] = useState<'local' | 'remote' | 'public-readonly' | 'static-readonly'>(remote ? 'remote' : 'local')
   const [syncStatus, setSyncStatus] = useState<'loading' | 'saved' | 'saving' | 'error' | 'unauthorized'>(remote ? 'loading' : 'saved')
   const [session, setSession] = useState<WorkspaceSession>()
   const revisionRef = useRef<number | null>(null)
@@ -91,10 +91,16 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   useEffect(() => {
     if (!api) return
     const controller = new AbortController()
+    const docsRoute = window.location.hash.startsWith('#/docs')
     const cfpRoute = window.location.hash.startsWith('#/cfp')
     const eventRoute = window.location.hash.startsWith('#/event')
     void (async () => {
       try {
+        if (docsRoute) {
+          setPersistenceMode('static-readonly')
+          acceptLoaded(seedState, 0)
+          return
+        }
         if (cfpRoute || eventRoute) {
           const loaded = cfpRoute ? await api.getPublicCfp({ signal: controller.signal }) : await api.getPublicEvent({ signal: controller.signal })
           const publicState = 'state' in loaded ? loaded.state : undefined
@@ -154,7 +160,7 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   }, [acceptLoaded, api, seedState])
 
   useEffect(() => {
-    if (!api || !hydratedRef.current) return
+    if (!api || !hydratedRef.current || persistenceMode === 'static-readonly') return
     const publicRoute = persistenceMode === 'public-readonly'
     const controller = new AbortController()
     const generation = ++pollGenerationRef.current

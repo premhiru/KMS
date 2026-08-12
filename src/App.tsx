@@ -1,6 +1,7 @@
-import { useEffect, useState, type ComponentType, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useState, type ComponentType, type FormEvent } from 'react'
 import {
   BookOpen,
+  BookMarked,
   ContactRound,
   CalendarDays,
   ChevronLeft,
@@ -41,6 +42,8 @@ import { PublicCfp } from './features/submissions/PublicCfp'
 import { ReviewWorkspace } from './features/submissions/ReviewWorkspace'
 import { useHashRoute, type AppRoute } from './routes/hash-router'
 
+const Documentation = lazy(() => import('./features/docs'))
+
 interface NavItem {
   route: AppRoute
   label: string
@@ -67,6 +70,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     { route: 'embeds', label: 'Embeds & widgets', icon: Share2 },
     { route: 'portal', label: 'Speaker portal', icon: BookOpen },
     { route: 'event', label: 'Public event', icon: Globe2 },
+    { route: 'docs', label: 'Documentation', icon: BookMarked },
   ] },
 ]
 
@@ -84,6 +88,7 @@ const routeTitles: Record<AppRoute, string> = {
   embeds: 'Embeds & widgets',
   portal: 'Speaker portal',
   event: 'Public event',
+  docs: 'Documentation',
   settings: 'Settings',
   admin: 'Access and audit',
 }
@@ -164,6 +169,10 @@ export default function App() {
 
   if (route === 'event') {
     return <main className="public-surface"><PublicEvent /></main>
+  }
+
+  if (route === 'docs') {
+    return <Suspense fallback={<main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Opening documentation</h1></main>}><Documentation /></Suspense>
   }
 
   if (syncStatus === 'unauthorized' || persistenceMode === 'public-readonly') {

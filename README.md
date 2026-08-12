@@ -2,6 +2,8 @@
 
 OpenSpeaker is an open-source conference program operations SaaS: collect proposals, run committee reviews, onboard speakers, build the agenda, communicate, and publish the attendee experience.
 
+**[Read the live documentation](https://openspeaker-kms.premhiru.chatgpt.site/#/docs)** · [Quickstart](docs/quickstart.md) · [API reference](docs/api-reference.md) · [Production deployment](docs/deployment.md)
+
 ![OpenSpeaker](https://img.shields.io/badge/license-MIT-6b5bd6) ![React](https://img.shields.io/badge/React-19-61dafb) ![TypeScript](https://img.shields.io/badge/TypeScript-6-blue)
 
 ## Product capabilities
@@ -52,6 +54,17 @@ npm audit --omit=dev
 ```
 
 The suite covers domain invariants, evaluation rounds, API transport, D1/R2 lifecycle contracts, tenant/RBAC boundaries, CFP enforcement, blind review isolation, optimistic concurrency, provider idempotency, and Resend calendar payloads. Playwright release tests exercise organizer, anonymous CFP, reviewer, speaker, and public-attendee workflows against a deterministic remote API stub, including accessibility, mobile layout, hydration failure, and revision-rebase scenarios.
+
+## Documentation
+
+The repository includes task-oriented guides alongside the exact Worker contract:
+
+- [`docs/quickstart.md`](docs/quickstart.md) — install, local modes, routes, and first workflow
+- [`docs/architecture.md`](docs/architecture.md) — components, trust boundaries, roles, and data flow
+- [`docs/api-reference.md`](docs/api-reference.md) — authenticated and public API examples
+- [`docs/deployment.md`](docs/deployment.md) — D1/R2 bindings, hosted secrets, provider setup, and release checks
+- [`db/api-contract.md`](db/api-contract.md) — canonical route and behavior contract
+- [`db/operations.md`](db/operations.md) — backup, restore, retention, and monitoring
 
 ## Production configuration
 
