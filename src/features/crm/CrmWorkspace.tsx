@@ -66,6 +66,24 @@ export function CrmWorkspace() {
     configured: false,
   });
   const [airtableBusy, setAirtableBusy] = useState(false);
+  const [airtableCheckError, setAirtableCheckError] = useState("");
+
+  async function refreshAirtableStatus() {
+    if (!crmApi) return;
+    setAirtableBusy(true);
+    setAirtableCheckError("");
+    try {
+      setAirtable(await crmApi.getAirtableStatus());
+    } catch (error) {
+      setAirtableCheckError(
+        error instanceof Error
+          ? error.message
+          : "Unable to check the Airtable connection.",
+      );
+    } finally {
+      setAirtableBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!crmApi || !api) return;
@@ -75,14 +93,25 @@ export function CrmWorkspace() {
       api.listEvents({ signal: controller.signal }),
       crmApi
         .getAirtableStatus(controller.signal)
-        .catch(() => ({ configured: false })),
+        .then((integration) => {
+          setAirtableCheckError("");
+          return integration;
+        })
+        .catch((error) => {
+          setAirtableCheckError(
+            error instanceof Error
+              ? error.message
+              : "Unable to check the Airtable connection.",
+          );
+          return undefined;
+        }),
     ])
       .then(([loaded, eventList, airtableStatus]) => {
         setCrm(loaded.crm);
         setRevision(loaded.revision);
         setEvents(eventList.events);
         setEventId(eventList.events[0]?.id ?? "");
-        setAirtable(airtableStatus);
+        if (airtableStatus) setAirtable(airtableStatus);
         setStatus("");
       })
       .catch((error) =>
@@ -572,13 +601,15 @@ export function CrmWorkspace() {
         </nav>
       </header>
       <aside
-        className={`crm-airtable ${airtable.configured ? "is-connected" : "is-unavailable"}`}
+        className={`crm-airtable ${airtableCheckError ? "is-unavailable" : airtable.configured ? "is-connected" : "is-unavailable"}`}
         aria-label="Airtable connection"
       >
         <div>
           <strong>Airtable optional sync</strong>
           <span>
-            {airtable.configured
+            {airtableCheckError
+              ? "Connection check failed · D1 CRM remains fully operational."
+              : airtable.configured
               ? "Connected · D1 remains the system of record"
               : "Unavailable · add Airtable credentials to enable optional sync. D1 CRM remains fully operational."}
           </span>
@@ -593,10 +624,10 @@ export function CrmWorkspace() {
           )}
         </div>
         <button
-          disabled={!airtable.configured || airtableBusy}
-          onClick={() => void syncAirtable()}
+          disabled={airtableBusy || (!airtable.configured && !airtableCheckError)}
+          onClick={() => void (airtableCheckError ? refreshAirtableStatus() : syncAirtable())}
         >
-          {airtableBusy ? "Syncing…" : "Sync to Airtable"}
+          {airtableBusy ? "Checking…" : airtableCheckError ? "Retry connection" : "Sync to Airtable"}
         </button>
       </aside>
       <p className="crm-status" role="status">

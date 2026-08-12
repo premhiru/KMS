@@ -1,9 +1,15 @@
+// oxlint-disable react/only-export-components -- exported selection logic is covered by focused workflow tests.
 import { useMemo, useState } from 'react'
 import { createId, nowIso, speakerName, useApp } from '../../core'
+import type { OnboardingTask } from '../../domain'
 import { createZip } from './zip'
 import './deliverables.css'
 
 type Filter = 'all' | 'incomplete' | 'complete' | 'overdue' | 'pending'
+
+export function selectedIncompleteSpeakerIds(tasks: Array<Pick<OnboardingTask, 'id' | 'speakerId' | 'completedAt'>>, selected: string[]): string[] {
+  return [...new Set(tasks.filter((task) => selected.includes(task.id) && !task.completedAt).map((task) => task.speakerId))]
+}
 
 export function DeliverablesWorkspace() {
   const { state, dispatch, downloadAsset } = useApp()
@@ -21,16 +27,20 @@ export function DeliverablesWorkspace() {
       || filter === 'incomplete' && !task.completedAt
       || filter === 'overdue' && !task.completedAt && new Date(task.dueAt) < new Date()
       || filter === 'pending' && task.approvalStatus === 'pending'), [state.tasks, state.speakers, state.submissions, filter])
+  const reminderSpeakerIds = useMemo(() => selectedIncompleteSpeakerIds(state.tasks, selected), [state.tasks, selected])
+  const reminderStatus = message || (selected.length === 0 ? 'Select one or more incomplete deliverables to queue a reminder.' : reminderSpeakerIds.length === 0 ? 'The selected deliverables are already complete.' : `${reminderSpeakerIds.length} speaker${reminderSpeakerIds.length === 1 ? '' : 's'} ready for a reminder.`)
 
   const remind = () => {
-    const speakerIds = [...new Set(rows.filter(({ task }) => selected.includes(task.id) && !task.completedAt).map(({ task }) => task.speakerId))]
-    if (!speakerIds.length) return
+    if (!reminderSpeakerIds.length) {
+      setMessage(selected.length ? 'The selected deliverables are already complete.' : 'Select one or more incomplete deliverables first.')
+      return
+    }
     const at = nowIso()
     dispatch({
       type: 'communication/log',
       entry: {
         id: createId('communication'),
-        recipientSpeakerIds: speakerIds,
+        recipientSpeakerIds: reminderSpeakerIds,
         subject: `${state.event.name} deliverables reminder`,
         body: 'Please review and complete your outstanding speaker deliverables.',
         channel: 'in-app-outbox',
@@ -39,7 +49,7 @@ export function DeliverablesWorkspace() {
       },
       at,
     })
-    setMessage(`Queued reminders for ${speakerIds.length} speakers.`)
+    setMessage(`Queued reminders for ${reminderSpeakerIds.length} speakers.`)
   }
 
   const exportZip = async () => {
@@ -66,11 +76,11 @@ export function DeliverablesWorkspace() {
       <div><p>Content operations</p><h1>Deliverables library</h1><span>Review every task, file version, approval, and conversation in one matrix.</span></div>
       <select aria-label="Filter deliverables" value={filter} onChange={(event) => setFilter(event.target.value as Filter)}><option value="all">All deliverables</option><option value="incomplete">Incomplete</option><option value="complete">Complete</option><option value="overdue">Overdue</option><option value="pending">Pending approval</option></select>
     </header>
-    <div className="deliverables-actions"><button onClick={remind}>Queue reminder</button><button onClick={() => void exportZip()}>Export selected ZIP</button><span role="status">{message}</span></div>
+    <div className="deliverables-actions"><button disabled={reminderSpeakerIds.length === 0} title={reminderSpeakerIds.length === 0 ? 'Select an incomplete deliverable first' : undefined} onClick={remind}>Queue reminder</button><button onClick={() => void exportZip()}>Export selected ZIP</button><span role="status">{reminderStatus}</span></div>
     <div className="deliverables-table" role="table" aria-label="Speaker deliverables">
       <div role="row" className="deliverables-head"><span role="columnheader">Select</span><span role="columnheader">Speaker</span><span role="columnheader">Deliverable</span><span role="columnheader">Due</span><span role="columnheader">Status</span><span role="columnheader">Files</span></div>
       {rows.map(({ task, speaker, submission }) => <div role="row" key={task.id}>
-        <span role="cell"><input aria-label={`Select ${task.title}`} type="checkbox" checked={selected.includes(task.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, task.id] : selected.filter((id) => id !== task.id))} /></span>
+        <span role="cell"><input aria-label={`Select ${task.title}`} type="checkbox" checked={selected.includes(task.id)} onChange={(event) => { setMessage(''); setSelected(event.target.checked ? [...selected, task.id] : selected.filter((id) => id !== task.id)) }} /></span>
         <span role="cell">{speaker ? speakerName(speaker) : 'Unknown speaker'}</span>
         <span role="cell"><strong>{task.title}</strong>{submission && <small>{submission.title}</small>}{task.instructions && <small>{task.instructions}</small>}</span>
         <span role="cell">{new Date(task.dueAt).toLocaleDateString()}</span>

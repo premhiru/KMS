@@ -78,6 +78,10 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
       next.hash = '/portal'
       window.location.replace(next.toString())
     }).catch(() => {
+      const next = new URL(window.location.href)
+      next.searchParams.delete('claimToken')
+      next.searchParams.delete('cfpClaim')
+      window.history.replaceState(null, '', next)
       setClaimStatus('failed')
       setClaimMessage('This access link is invalid, expired, or already used. Request a new link below.')
     })
@@ -366,7 +370,8 @@ interface CustomQuestionProps {
 
 function CustomQuestion({ question, value, error, onChange }: CustomQuestionProps) {
   if (question.type === 'checkbox') {
-    return <label className="sb-check"><input type="checkbox" required={question.required} aria-invalid={Boolean(error)} checked={value === 'true'} onChange={(event) => onChange(String(event.target.checked))} /><span><strong>{question.label}{question.required ? ' *' : ''}</strong>{error && <small className="sb-field__error">{error}</small>}</span></label>
+    const messageId = `question-${question.id}-error`
+    return <label className="sb-check"><input type="checkbox" required={question.required} aria-invalid={Boolean(error)} aria-describedby={error ? messageId : undefined} checked={value === 'true'} onChange={(event) => onChange(String(event.target.checked))} /><span><strong>{question.label}{question.required ? ' *' : ''}</strong>{error && <small id={messageId} className="sb-field__error">{error}</small>}</span></label>
   }
   return (
     <Field label={`${question.label}${question.required ? ' *' : ''}`} error={error}>

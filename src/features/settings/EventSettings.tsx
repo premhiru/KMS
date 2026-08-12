@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState, type FormEvent } from 'react'
+// oxlint-disable react/only-export-components -- exported revision helpers are covered by focused workflow tests.
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { createId, downloadCsv, downloadJson, nowIso, submissionsToCsv, useApp } from '../../core'
 import type { ApprovalStatus, ResourceFile, ResourcePage } from '../../domain/types'
 import './settings.css'
@@ -20,12 +21,37 @@ function zonedDateTime(value: string, timeZone: string): string {
   return new Date(desired - (rendered - desired)).toISOString()
 }
 
+export interface ResourceContentDraft {
+  title: string
+  body: string
+  embedUrl: string
+}
+
+export function resourceContentDraft(resource: ResourcePage): ResourceContentDraft {
+  return { title: resource.title, body: resource.body, embedUrl: resource.embedUrl ?? '' }
+}
+
+export function resourceContentChanged(resource: ResourcePage, draft: ResourceContentDraft): boolean {
+  return resource.title !== draft.title || resource.body !== draft.body || (resource.embedUrl ?? '') !== draft.embedUrl
+}
+
+export function createResourceRevision(resource: ResourcePage, draft: ResourceContentDraft, updatedAt: string): ResourcePage {
+  return { ...resource, title: draft.title, body: draft.body, embedUrl: draft.embedUrl || undefined, version: Math.max(1, resource.version ?? 1) + 1, approvalStatus: 'draft', updatedAt }
+}
+
 export function EventSettings() {
   const { state, dispatch, reset, importJson, exportJson, persistenceMode, syncStatus, uploadAsset } = useApp()
   const [message, setMessage] = useState('')
   const [draft, setDraft] = useState(() => ({ name: state.event.name, slug: state.event.slug, venue: state.event.venue, timezone: state.event.timezone, startAt: dateTimeInput(state.event.startAt, state.event.timezone), endAt: dateTimeInput(state.event.endAt, state.event.timezone), rooms: state.event.rooms.join(', '), tracks: state.event.tracks.join(', '), description: state.event.description ?? '' }))
+  const [resourceDrafts, setResourceDrafts] = useState<Record<string, ResourceContentDraft>>(() => Object.fromEntries((state.event.resources ?? []).map((resource) => [resource.id, resourceContentDraft(resource)])))
   const importRef = useRef<HTMLInputElement>(null)
   const publicUrl = useMemo(() => `${window.location.origin}${window.location.pathname}#/event`, [])
+
+  useEffect(() => {
+    setResourceDrafts(Object.fromEntries((state.event.resources ?? []).map((resource) => [resource.id, resourceContentDraft(resource)])))
+  // Event switches replace the draft; remote saves within the same event must not discard unsaved edits.
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.event.id])
 
   function save(event: FormEvent) {
     event.preventDefault()
@@ -42,9 +68,33 @@ export function EventSettings() {
 
   function updateResource(index: number, patch: Partial<ResourcePage>) {
     const resources = [...(state.event.resources ?? [])]
-    const contentChanged = patch.title !== undefined || patch.body !== undefined || patch.embedUrl !== undefined
-    resources[index] = { ...resources[index], ...patch, version: contentChanged ? (resources[index].version ?? 0) + 1 : resources[index].version, approvalStatus: contentChanged ? 'draft' : (patch.approvalStatus ?? resources[index].approvalStatus), updatedAt: nowIso() }
+    resources[index] = { ...resources[index], ...patch, updatedAt: nowIso() }
     dispatch({ type: 'event/update', patch: { resources }, at: new Date().toISOString() })
+  }
+
+  function editResourceDraft(resource: ResourcePage, patch: Partial<ResourceContentDraft>) {
+    setResourceDrafts((drafts) => ({ ...drafts, [resource.id]: { ...(drafts[resource.id] ?? resourceContentDraft(resource)), ...patch } }))
+  }
+
+  function saveResourceRevision(index: number) {
+    const resources = [...(state.event.resources ?? [])]
+    const resource = resources[index]
+    if (!resource) return
+    const content = resourceDrafts[resource.id] ?? resourceContentDraft(resource)
+    if (!resourceContentChanged(resource, content)) {
+      setMessage(`${resource.title || 'Resource'} has no unsaved content changes.`)
+      return
+    }
+    const at = nowIso()
+    resources[index] = createResourceRevision(resource, content, at)
+    dispatch({ type: 'event/update', patch: { resources }, at })
+    setMessage(`${content.title || 'Resource'} saved as version ${resources[index].version} and returned to draft review.`)
+  }
+
+  function addResource() {
+    const resource: ResourcePage = { id: createId('resource'), title: 'New resource', body: '', version: 1, approvalStatus: 'draft', updatedAt: nowIso(), files: [] }
+    setResourceDrafts((drafts) => ({ ...drafts, [resource.id]: resourceContentDraft(resource) }))
+    dispatch({ type: 'event/update', patch: { resources: [...(state.event.resources ?? []), resource] }, at: nowIso() })
   }
 
   async function addResourceFile(index: number, file?: File) {
@@ -85,24 +135,28 @@ export function EventSettings() {
     <section className="card resource-editor" aria-labelledby="speaker-wiki-heading">
       <div className="card-heading">
         <div><h2 id="speaker-wiki-heading">Speaker resources, wiki, and files</h2><p>Versioned content appears in the participant portal only after approval. Embed URLs are HTTPS-only in the portal.</p></div>
-        <button className="button secondary" type="button" onClick={() => dispatch({ type: 'event/update', patch: { resources: [...(state.event.resources ?? []), { id: createId('resource'), title: 'New resource', body: '', version: 1, approvalStatus: 'draft', updatedAt: nowIso(), files: [] }] }, at: nowIso() })}>Add resource</button>
+        <button className="button secondary" type="button" onClick={addResource}>Add resource</button>
       </div>
       <div className="resource-list">
-        {(state.event.resources ?? []).map((resource, index) => <article className="resource-edit-row" key={resource.id}>
+        {(state.event.resources ?? []).map((resource, index) => {
+          const content = resourceDrafts[resource.id] ?? resourceContentDraft(resource)
+          const hasUnsavedChanges = resourceContentChanged(resource, content)
+          return <article className="resource-edit-row" key={resource.id}>
           <header className="resource-row-header">
-            <div><span>Resource {index + 1}</span><strong>{resource.title || 'Untitled resource'}</strong></div>
+            <div><span>Resource {index + 1}</span><strong>{content.title || 'Untitled resource'}</strong></div>
             <label className="resource-version"><span>Version and visibility</span><div><strong>v{resource.version ?? 1}</strong><select aria-label={`Approval for ${resource.title}`} value={resource.approvalStatus ?? 'draft'} onChange={(event) => updateResource(index, { approvalStatus: event.target.value as ApprovalStatus })}><option value="draft">Draft</option><option value="pending">Pending review</option><option value="approved">Approved</option><option value="changes-requested">Changes requested</option><option value="archived">Archived</option></select></div></label>
           </header>
           <div className="resource-fields">
-            <label>Title<input aria-label={`Resource ${index + 1} title`} value={resource.title} onChange={(event) => updateResource(index, { title: event.target.value })}/></label>
-            <label>Embed URL <small>Optional · HTTPS only</small><input aria-label={`Resource ${index + 1} embed URL`} placeholder="https://example.com/resource" value={resource.embedUrl ?? ''} onChange={(event) => updateResource(index, { embedUrl: event.target.value || undefined })}/></label>
-            <label className="resource-body-field">Wiki content<textarea aria-label={`Resource ${index + 1} body`} rows={4} value={resource.body} onChange={(event) => updateResource(index, { body: event.target.value })}/></label>
+            <label>Title<input aria-label={`Resource ${index + 1} title`} value={content.title} onChange={(event) => editResourceDraft(resource, { title: event.target.value })}/></label>
+            <label>Embed URL <small>Optional · HTTPS only</small><input aria-label={`Resource ${index + 1} embed URL`} placeholder="https://example.com/resource" value={content.embedUrl} onChange={(event) => editResourceDraft(resource, { embedUrl: event.target.value })}/></label>
+            <label className="resource-body-field">Wiki content<textarea aria-label={`Resource ${index + 1} body`} rows={4} value={content.body} onChange={(event) => editResourceDraft(resource, { body: event.target.value })}/></label>
           </div>
+          <div><button className="button primary" type="button" disabled={!hasUnsavedChanges} onClick={() => saveResourceRevision(index)}>Save revision</button> <small role="status">{hasUnsavedChanges ? 'Unsaved changes. Saving creates one new version.' : 'Content is saved.'}</small></div>
           <div className="resource-files">
             <div className="resource-files-heading"><div><strong>Attachments</strong><small>{(resource.files ?? []).length === 0 ? 'No files attached' : `${resource.files?.length} attached`}</small></div><label className="button secondary">Attach file<input hidden type="file" onChange={(event) => { void addResourceFile(index, event.target.files?.[0]); event.target.value = '' }} /></label></div>
             {(resource.files ?? []).map((file) => <div className="resource-file-row" key={file.id}><span><strong>{file.name}</strong><small>v{file.version} · {file.approvalStatus} · {Math.ceil(file.size / 1024)} KB</small></span><select aria-label={`Approval for ${file.name}`} value={file.approvalStatus} onChange={(event) => updateResource(index, { files: resource.files?.map((item) => item.id === file.id ? { ...item, approvalStatus: event.target.value as ApprovalStatus, approvedAt: event.target.value === 'approved' ? nowIso() : undefined } : item) })}><option value="pending">Pending</option><option value="approved">Approved</option><option value="changes-requested">Changes requested</option><option value="archived">Archived</option></select></div>)}
           </div>
-        </article>)}
+        </article>})}
       </div>
     </section>
     <PublicProgramSettings />

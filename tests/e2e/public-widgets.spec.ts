@@ -73,3 +73,32 @@ test('organizer creates, saves, previews, and retrieves a configured embed', asy
   await expect(code).toContainText('track=Agents+%26+orchestration')
   await expect(code).not.toContainText('#/event')
 })
+
+test('public detail dialog makes the background inert and restores focus', async ({ page }) => {
+  await installApiStub(page)
+  await page.goto('/#/event/speakers')
+  const speakerCard = page.locator('.public-speaker-list .public-speaker-card').first()
+  await speakerCard.click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await expect.poll(() => page.locator('#root').evaluate((element) => (element as HTMLElement).inert)).toBe(true)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect.poll(() => page.locator('#root').evaluate((element) => (element as HTMLElement).inert)).toBe(false)
+  await expect(speakerCard).toBeFocused()
+})
+
+test('public embed copy reports clipboard denial without an uncaught error', async ({ page }) => {
+  const errors: Error[] = []
+  page.on('pageerror', (error) => errors.push(error))
+  await installApiStub(page)
+  await page.goto('/#/event/sessions')
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: () => false })
+  })
+  await page.getByRole('button', { name: 'Embed' }).click()
+  await page.getByRole('button', { name: 'Copy embed code' }).click()
+  await expect(page.locator('.embed-panel button')).toContainText('Copy failed')
+  await expect(page.getByRole('status')).toContainText('Clipboard access is unavailable')
+  expect(errors).toEqual([])
+})

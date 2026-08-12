@@ -39,3 +39,30 @@ test('documentation navigation works on a mobile viewport', async ({ page }) => 
   await expect(page).toHaveURL(/#\/docs\/errors$/)
   await expect(page.getByRole('heading', { name: 'Errors and troubleshooting' })).toBeVisible()
 })
+
+test('documentation skip link, code tabs, and clipboard failure are keyboard and screen-reader accessible', async ({ page }) => {
+  const pageErrors: Error[] = []
+  page.on('pageerror', (error) => pageErrors.push(error))
+  await page.goto('/#/docs')
+
+  await page.getByRole('link', { name: 'Skip to documentation' }).focus()
+  await expect(page.getByRole('link', { name: 'Skip to documentation' })).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#docs-content')).toBeFocused()
+  await expect(page).toHaveURL(/#\/docs$/)
+
+  const curlTab = page.getByRole('tab', { name: 'cURL' }).first()
+  await curlTab.focus()
+  await page.keyboard.press('End')
+  await expect(page.getByRole('tab', { name: 'JavaScript' }).first()).toBeFocused()
+  await expect(page.getByRole('tab', { name: 'JavaScript' }).first()).toHaveAttribute('aria-selected', 'true')
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: () => false })
+  })
+  await page.getByRole('button', { name: 'Copy code' }).first().click()
+  await expect(page.getByRole('button', { name: 'Copy code' }).first()).toContainText('Copy failed')
+  await expect(page.getByRole('status').filter({ hasText: 'Clipboard access is unavailable' }).first()).toBeAttached()
+  expect(pageErrors).toEqual([])
+})

@@ -64,6 +64,44 @@ test('Speaker Wiki fields, attachments, and portal resources stay aligned', asyn
   expect(result.violations.filter((violation) => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([])
 })
 
+test('expanded speaker tools stay inside the mobile viewport', async ({ page }) => {
+  await installApiStub(page, { role: 'owner' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/#/speakers')
+
+  for (const tool of ['Import CSV', 'Assign a task']) {
+    await page.getByText(tool, { exact: true }).click()
+    await expectNoPageOverflow(page, `${tool} speaker disclosure at 390px`)
+    const openTool = page.locator('.spk-tools[open]')
+    const bounds = await openTool.evaluate((element) => {
+      const viewport = document.documentElement.clientWidth
+      const descendants = [...element.querySelectorAll<HTMLElement>('input, select, textarea, button, label')]
+        .filter((child) => getComputedStyle(child).display !== 'none')
+        .map((child) => {
+          const box = child.getBoundingClientRect()
+          return { left: box.left, right: box.right, viewport }
+        })
+      return descendants
+    })
+    expect(bounds.every((box) => box.left >= 0 && box.right <= box.viewport + 1)).toBe(true)
+    await page.getByText(tool, { exact: true }).click()
+  }
+})
+
+test('every product surface has no serious or critical axe violations on mobile', async ({ page }) => {
+  test.setTimeout(120_000)
+  await installApiStub(page, { role: 'owner' })
+  await page.setViewportSize({ width: 390, height: 844 })
+
+  for (const route of [...organizerRoutes, ...publicRoutes]) {
+    await page.goto(`/#/${route}`)
+    await page.locator('main').first().waitFor({ state: 'visible' })
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()
+    const severe = result.violations.filter((violation) => violation.impact === 'serious' || violation.impact === 'critical')
+    expect(severe, `${route} should have no serious or critical axe violations`).toEqual([])
+  }
+})
+
 test('mobile navigation is inert when closed and restores focus after Escape', async ({ page }) => {
   await installApiStub(page, { role: 'owner' })
   await page.setViewportSize({ width: 390, height: 844 })
@@ -74,6 +112,11 @@ test('mobile navigation is inert when closed and restores focus after Escape', a
   await organizerMenu.click()
   await expect(organizerNavigation).not.toHaveAttribute('inert', '')
   await expect(page.getByRole('button', { name: 'Close navigation' }).last()).toBeFocused()
+  const organizerTargets = await organizerNavigation.locator('button').evaluateAll((buttons) => buttons.map((button) => ({
+    height: button.getBoundingClientRect().height,
+    minHeight: Number.parseFloat(getComputedStyle(button).minHeight),
+  })))
+  expect(organizerTargets.every(({ height, minHeight }) => height >= 43.5 && minHeight >= 44)).toBe(true)
   await page.keyboard.press('Escape')
   await expect(organizerMenu).toBeFocused()
   await expect(organizerNavigation).toHaveAttribute('inert', '')

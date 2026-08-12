@@ -1,12 +1,12 @@
 .sb-feature,
 .sb-cfp-public {
   --sb-ink: #242330;
-  --sb-muted: #706f7e;
+  --sb-muted: #625f6d;
   --sb-line: #e6e5ec;
   --sb-soft: #f6f5f9;
   --sb-primary: #6558d3;
   --sb-primary-dark: #5145bb;
-  --sb-success: #197c69;
+  --sb-success: #126b5d;
   --sb-warning: #ad5d2e;
   --sb-danger: #bc464c;
   color: var(--sb-ink);

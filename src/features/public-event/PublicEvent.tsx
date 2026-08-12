@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { CalendarCheck, CalendarPlus, Check, ChevronLeft, Clipboard, Clock3, Code2, MapPin, Search, Star, X } from 'lucide-react'
 import { agendaToIcs, downloadIcs, speakerName, useApp } from '../../core'
 import type { AppState, PublicProgramConfig, Speaker } from '../../domain'
@@ -35,6 +36,21 @@ function field(options: PublicWidgetOptions | undefined, value: string) {
   return !options?.visibleFields?.length || options.visibleFields.includes(value)
 }
 
+function fallbackCopy(value: string) {
+  const field = document.createElement('textarea')
+  field.value = value
+  field.readOnly = true
+  field.style.position = 'fixed'
+  field.style.opacity = '0'
+  document.body.appendChild(field)
+  field.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    field.remove()
+  }
+}
+
 function SpeakerAvatar({ speaker }: { speaker: Speaker }) {
   return <div className="public-speaker-avatar">{speaker.photoUrl ? <img src={speaker.photoUrl} alt="" /> : <span aria-hidden="true">{speaker.firstName[0]}{speaker.lastName[0]}</span>}</div>
 }
@@ -44,6 +60,9 @@ function Dialog({ label, children, onClose }: { label: string; children: ReactNo
   const dialogRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const prior = document.activeElement as HTMLElement | null
+    const background = document.getElementById('root')
+    const wasInert = background?.inert ?? false
+    if (background) background.inert = true
     closeRef.current?.focus()
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -54,9 +73,13 @@ function Dialog({ label, children, onClose }: { label: string; children: ReactNo
       if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable.at(-1)?.focus() }
     }
     window.addEventListener('keydown', keydown)
-    return () => { window.removeEventListener('keydown', keydown); prior?.focus() }
+    return () => {
+      window.removeEventListener('keydown', keydown)
+      if (background) background.inert = wasInert
+      prior?.focus()
+    }
   }, [onClose])
-  return <div className="public-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div ref={dialogRef} role="dialog" aria-modal="true" aria-label={label} className="public-dialog"><button ref={closeRef} className="public-dialog-close" aria-label={`Close ${label}`} onClick={onClose}><X /></button>{children}</div></div>
+  return createPortal(<div className="public-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div ref={dialogRef} role="dialog" aria-modal="true" aria-label={label} className="public-dialog"><button ref={closeRef} className="public-dialog-close" aria-label={`Close ${label}`} onClick={onClose}><X /></button>{children}</div></div>, document.body)
 }
 
 function SessionDetail({ record, state, onClose }: { record: PublicSessionRecord; state: AppState; onClose: () => void }) {
@@ -193,7 +216,7 @@ export function PublicEvent() {
   const program: PublicProgramConfig = state.event.publicProgram ?? { defaultView: 'day', enabledViews: ['list', 'day', 'week', 'track', 'room'], showSpeakers: true, showItinerary: true, showCalendarDownloads: true, embedHeight: 720 }
   const [surface, setSurface] = useState<PublicWidgetType>(requestedWidget)
   const [showEmbed, setShowEmbed] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const origin = `${window.location.origin}${window.location.pathname}`
   const quickEmbedUrl = new URL(origin)
   quickEmbedUrl.searchParams.set('embed', 'quick')
@@ -205,12 +228,22 @@ export function PublicEvent() {
     window.addEventListener('hashchange', syncSurface)
     return () => window.removeEventListener('hashchange', syncSurface)
   }, [])
-  const copyEmbed = async () => { try { await navigator.clipboard.writeText(embedCode); setCopied(true); window.setTimeout(() => setCopied(false), 1800) } catch { setCopied(false) } }
+  const copyEmbed = async () => {
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(embedCode)
+      copied = true
+    } catch {
+      copied = fallbackCopy(embedCode)
+    }
+    setCopyState(copied ? 'copied' : 'failed')
+    if (copied) window.setTimeout(() => setCopyState('idle'), 1800)
+  }
   const navigate = (next: PublicWidgetType) => { setSurface(next); window.location.hash = `/event/${next}` }
   const params = new URLSearchParams(window.location.search)
   const output = params.get('output')
   const options = optionsFromUrl()
   if (output === 'json' || output === 'xml' || output === 'ical') return params.get('enabled') === '0' ? <main className="public-feed"><h1>Widget disabled</h1></main> : <PublicFeed format={output} options={options}/>
   if (params.has('embed')) return params.get('enabled') === '0' ? <main className="public-feed"><h1>Widget disabled</h1></main> : <PublicWidget type={surface} options={options}/>
-  return <div className="public-event-feature"><nav className="event-nav"><a className="event-brand" href="#/event"><strong>OPEN<span>SPEAKER</span></strong></a><button className="public-back" onClick={() => window.history.back()}><ChevronLeft/>Back</button><div>{(Object.keys(widgetLabels) as PublicWidgetType[]).map((item) => <button key={item} className={surface === item ? 'active' : ''} aria-current={surface === item ? 'page' : undefined} onClick={() => navigate(item)}>{widgetLabels[item]}</button>)}<button aria-expanded={showEmbed} aria-controls="public-embed-panel" onClick={() => setShowEmbed(!showEmbed)}><Code2/>Embed</button></div></nav><header className="event-hero"><div><span>{eventDates.toUpperCase()} · {state.event.venue.toUpperCase()}</span><h1>{state.event.name}</h1><p>{state.event.description ?? 'Meet the speakers and explore the published program.'}</p></div></header>{showEmbed && <section className="embed-panel" id="public-embed-panel"><div><Code2/><h2>Embed this {widgetLabels[surface].toLowerCase()}</h2><p>This live iframe renders the selected public widget.</p></div><pre>{embedCode}</pre><button onClick={copyEmbed}>{copied ? <Check/> : <Clipboard/>}{copied ? 'Copied' : 'Copy embed code'}</button></section>}<PublicWidget type={surface}/></div>
+  return <div className="public-event-feature"><nav className="event-nav"><a className="event-brand" href="#/event"><strong>OPEN<span>SPEAKER</span></strong></a><button className="public-back" onClick={() => window.history.back()}><ChevronLeft/>Back</button><div>{(Object.keys(widgetLabels) as PublicWidgetType[]).map((item) => <button key={item} className={surface === item ? 'active' : ''} aria-current={surface === item ? 'page' : undefined} onClick={() => navigate(item)}>{widgetLabels[item]}</button>)}<button aria-expanded={showEmbed} aria-controls="public-embed-panel" onClick={() => setShowEmbed(!showEmbed)}><Code2/>Embed</button></div></nav><header className="event-hero"><div><span>{eventDates.toUpperCase()} · {state.event.venue.toUpperCase()}</span><h1>{state.event.name}</h1><p>{state.event.description ?? 'Meet the speakers and explore the published program.'}</p></div></header>{showEmbed && <section className="embed-panel" id="public-embed-panel"><div><Code2/><h2>Embed this {widgetLabels[surface].toLowerCase()}</h2><p>This live iframe renders the selected public widget.</p></div><pre>{embedCode}</pre><button onClick={() => void copyEmbed()}>{copyState === 'copied' ? <Check/> : <Clipboard/>}{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy embed code'}</button><span className="sr-only" role="status">{copyState === 'copied' ? 'Embed code copied to clipboard.' : copyState === 'failed' ? 'Clipboard access is unavailable. Select and copy the embed code manually.' : ''}</span></section>}<PublicWidget type={surface}/></div>
 }

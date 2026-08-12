@@ -103,9 +103,9 @@ export function ReviewWorkspace({
         <div><p className="sb-eyebrow">Program committee</p><h1 id="review-workspace-title">Evaluation workspace</h1><p>Configure weighted rounds, assign reviewers, and complete an identity-filtered review queue.</p></div>
         <div className="sb-stat"><ClipboardCheck aria-hidden="true" /><span><strong>{state.reviews.length}</strong> reviews</span></div>
       </header>
-      <div className="sb-workspace-tabs" role="tablist" aria-label="Evaluation workspace view">
-        <button type="button" role="tab" aria-selected={mode === 'reviewer'} className={mode === 'reviewer' ? 'is-selected' : ''} onClick={() => setMode('reviewer')}>Reviewer queue</button>
-        {!currentReviewerEmail && <button type="button" role="tab" aria-selected={mode === 'organizer'} className={mode === 'organizer' ? 'is-selected' : ''} onClick={() => setMode('organizer')}>Plans and assignments</button>}
+      <div className="sb-workspace-tabs" role="group" aria-label="Evaluation workspace view">
+        <button type="button" aria-pressed={mode === 'reviewer'} className={mode === 'reviewer' ? 'is-selected' : ''} onClick={() => setMode('reviewer')}>Reviewer queue</button>
+        {!currentReviewerEmail && <button type="button" aria-pressed={mode === 'organizer'} className={mode === 'organizer' ? 'is-selected' : ''} onClick={() => setMode('organizer')}>Plans and assignments</button>}
       </div>
 
       {mode === 'organizer' && <EvaluationPlanManager onOpenReviewer={openReviewer} />}

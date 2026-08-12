@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import {
   ArrowRight,
   BookOpen,
@@ -23,14 +23,35 @@ function pathSection() {
   return docsSections.some((section) => section.id === value) ? value : 'quickstart'
 }
 
-function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    await navigator.clipboard.writeText(value)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1600)
+function fallbackCopy(value: string) {
+  const field = document.createElement('textarea')
+  field.value = value
+  field.readOnly = true
+  field.style.position = 'fixed'
+  field.style.opacity = '0'
+  document.body.appendChild(field)
+  field.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    field.remove()
   }
-  return <button className="docs-copy" type="button" onClick={() => void copy()} aria-label={`${label} code`}>{copied ? <Check size={14} /> : <Clipboard size={14} />}{copied ? 'Copied' : label}</button>
+}
+
+function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copy = async () => {
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(value)
+      copied = true
+    } catch {
+      copied = fallbackCopy(value)
+    }
+    setStatus(copied ? 'copied' : 'failed')
+    if (copied) window.setTimeout(() => setStatus('idle'), 1600)
+  }
+  return <><button className="docs-copy" type="button" onClick={() => void copy()} aria-label={`${label} code`}>{status === 'copied' ? <Check size={14} /> : <Clipboard size={14} />}{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : label}</button><span className="sr-only" role="status">{status === 'copied' ? 'Code copied to clipboard.' : status === 'failed' ? 'Clipboard access is unavailable. Select and copy the code manually.' : ''}</span></>
 }
 
 function CodeBlock({ children, title }: { children: string; title?: string }) {
@@ -42,16 +63,31 @@ function CodeBlock({ children, title }: { children: string; title?: string }) {
 
 function CodeTabs({ curl, javascript }: { curl: string; javascript: string }) {
   const [language, setLanguage] = useState<Language>('curl')
+  const id = useId()
+  const tabs = useRef<Record<Language, HTMLButtonElement | null>>({ curl: null, javascript: null })
   const value = language === 'curl' ? curl : javascript
+  const selectWithKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>, current: Language) => {
+    const order: Language[] = ['curl', 'javascript']
+    const currentIndex = order.indexOf(current)
+    let next: Language | undefined
+    if (event.key === 'ArrowRight') next = order[(currentIndex + 1) % order.length]
+    if (event.key === 'ArrowLeft') next = order[(currentIndex - 1 + order.length) % order.length]
+    if (event.key === 'Home') next = order[0]
+    if (event.key === 'End') next = order.at(-1)
+    if (!next) return
+    event.preventDefault()
+    setLanguage(next)
+    tabs.current[next]?.focus()
+  }
   return <div className="docs-code-tabs">
     <div className="docs-code-tabs-head">
       <div role="tablist" aria-label="Code language">
-        <button role="tab" aria-selected={language === 'curl'} onClick={() => setLanguage('curl')}>cURL</button>
-        <button role="tab" aria-selected={language === 'javascript'} onClick={() => setLanguage('javascript')}>JavaScript</button>
+        <button ref={(node) => { tabs.current.curl = node }} id={`${id}-curl-tab`} role="tab" aria-controls={`${id}-panel`} aria-selected={language === 'curl'} tabIndex={language === 'curl' ? 0 : -1} onKeyDown={(event) => selectWithKeyboard(event, 'curl')} onClick={() => setLanguage('curl')}>cURL</button>
+        <button ref={(node) => { tabs.current.javascript = node }} id={`${id}-javascript-tab`} role="tab" aria-controls={`${id}-panel`} aria-selected={language === 'javascript'} tabIndex={language === 'javascript' ? 0 : -1} onKeyDown={(event) => selectWithKeyboard(event, 'javascript')} onClick={() => setLanguage('javascript')}>JavaScript</button>
       </div>
       <CopyButton value={value} />
     </div>
-    <pre role="tabpanel" tabIndex={0}><code>{value}</code></pre>
+    <pre id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-${language}-tab`} tabIndex={0}><code>{value}</code></pre>
   </div>
 }
 
@@ -118,7 +154,7 @@ export default function Documentation() {
   useEffect(() => {
     if (!mobileNavigation || !mobileOpen) return
     closeButtonRef.current?.focus()
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
         setMobileOpen(false)
@@ -170,7 +206,7 @@ export default function Documentation() {
   }
 
   return <div className="docs-app">
-    <a className="docs-skip" href="#docs-content">Skip to documentation</a>
+    <a className="docs-skip" href="#docs-content" onClick={(event) => { event.preventDefault(); document.getElementById('docs-content')?.focus() }}>Skip to documentation</a>
     <header className="docs-topbar">
       <a className="docs-brand" href="#/docs/quickstart" onClick={() => go('quickstart')}><span><Sparkles size={17} /></span><strong>OpenSpeaker</strong><em>docs</em></a>
       <nav aria-label="Documentation links">

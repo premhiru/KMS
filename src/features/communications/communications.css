@@ -18,3 +18,7 @@
 .reminder-row__actions { display: flex; gap: 6px; }
 @media(max-width:1000px){.reminder-row{grid-template-columns:1fr 1fr}.reminder-row__actions{grid-column:1/-1}}
 @media(max-width:560px){.reminder-automation__header{flex-direction:column}.reminder-row{grid-template-columns:1fr}}
+
+/* WCAG AA contrast for compact template and page metadata. */
+.communications-feature .feature-heading span,.communications-feature .template-list small{color:#5c5866}
+.communications-feature .template-list strong{color:#4f4b58}

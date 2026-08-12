@@ -1,3 +1,4 @@
+// oxlint-disable react/only-export-components -- exported integration/date guards are covered by focused workflow tests.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarPlus, Check, Download, Edit3, Mail, Plus, Send, Trash2, X } from 'lucide-react'
 import { agendaToIcs, createId, downloadIcs, nowIso, renderTemplate, selectAudienceSpeakerIds, speakerInvitationToIcs, speakerName, useApp } from '../../core'
@@ -16,6 +17,28 @@ interface TemplateDraft {
 
 const emptyDraft: TemplateDraft = { name: '', subject: '', body: '', audience: 'accepted', enabled: true }
 
+export type EmailIntegrationState = 'loading' | 'configured' | 'not-configured' | 'check-failed'
+
+interface EmailIntegrationClient {
+  getIntegrationStatus(): Promise<{ configured: { resend: boolean } }>
+}
+
+export async function checkEmailIntegration(api: EmailIntegrationClient | undefined, persistenceMode: string): Promise<EmailIntegrationState> {
+  if (persistenceMode !== 'remote') return 'not-configured'
+  if (!api) return 'check-failed'
+  try {
+    return (await api.getIntegrationStatus()).configured.resend ? 'configured' : 'not-configured'
+  } catch {
+    return 'check-failed'
+  }
+}
+
+export function parseReminderDateTime(value: string): string | undefined {
+  if (!value.trim()) return undefined
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined
+}
+
 function trapDialogFocus(event: KeyboardEvent, dialog: HTMLElement | null) {
   if (event.key !== 'Tab' || !dialog) return
   const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
@@ -33,7 +56,8 @@ export function CommunicationsCenter() {
   const [audience, setAudience] = useState<MessageAudience>(state.templates[0]?.audience ?? 'accepted')
   const [customIds, setCustomIds] = useState<string[]>([])
   const [notice, setNotice] = useState('')
-  const [emailConfigured, setEmailConfigured] = useState(false)
+  const [emailIntegration, setEmailIntegration] = useState<EmailIntegrationState>(persistenceMode === 'remote' ? 'loading' : 'not-configured')
+  const [integrationCheck, setIntegrationCheck] = useState(0)
   const [sending, setSending] = useState(false)
   const modalFirstFieldRef = useRef<HTMLInputElement>(null)
   const modalTriggerRef = useRef<HTMLElement | null>(null)
@@ -45,11 +69,14 @@ export function CommunicationsCenter() {
   const previewTask = state.tasks.find((task) => previewSpeaker && task.speakerId === previewSpeaker.id && !task.completedAt)
   const preview = selectedTemplate ? renderTemplate(selectedTemplate, { event: state.event, speaker: previewSpeaker, submission: previewSubmission, task: previewTask }) : undefined
   const outbox = useMemo(() => [...state.communicationLog].sort((left, right) => right.sentAt.localeCompare(left.sentAt)), [state.communicationLog])
+  const emailConfigured = emailIntegration === 'configured'
 
   useEffect(() => {
-    if (!api || persistenceMode !== 'remote') return
-    void api.getIntegrationStatus().then((status) => setEmailConfigured(status.configured.resend)).catch(() => setEmailConfigured(false))
-  }, [api, persistenceMode])
+    let active = true
+    setEmailIntegration(persistenceMode === 'remote' ? 'loading' : 'not-configured')
+    void checkEmailIntegration(api, persistenceMode).then((status) => { if (active) setEmailIntegration(status) })
+    return () => { active = false }
+  }, [api, persistenceMode, integrationCheck])
 
   useEffect(() => {
     if (!draftOpen) return
@@ -141,7 +168,7 @@ export function CommunicationsCenter() {
 
   return <section className="communications-feature">
     <header className="feature-heading"><div><p>SPEAKER COMMUNICATIONS</p><h1>Communications</h1><span>Create reusable templates, preview personalization, and keep a durable delivery log.</span></div><div className="feature-actions"><button className="feature-button secondary" onClick={() => downloadIcs(`${state.event.slug}-calendar.ics`, agendaToIcs(state))}><CalendarPlus size={16}/>Download calendar invite</button><button className="feature-button primary" onClick={() => openDraft(emptyDraft)}><Plus size={16}/>New template</button></div></header>
-    <div className="delivery-disclosure"><Mail size={17}/><p><b>{emailConfigured ? 'Resend delivery connected' : 'Email provider not configured'}</b> {emailConfigured ? 'Personalized messages are delivered with an iCalendar attachment and logged server-side.' : 'The in-app outbox remains available; configure RESEND_API_KEY and EMAIL_FROM for external delivery.'}</p></div>
+    <div className="delivery-disclosure"><Mail size={17}/><p aria-live="polite"><b>{emailIntegration === 'loading' ? 'Checking email delivery…' : emailIntegration === 'configured' ? 'Resend delivery connected' : emailIntegration === 'check-failed' ? 'Email connection check failed' : 'Email provider not configured'}</b> {emailIntegration === 'loading' ? 'External delivery controls will be available after the check completes.' : emailIntegration === 'configured' ? 'Personalized messages are delivered with an iCalendar attachment and logged server-side.' : emailIntegration === 'check-failed' ? 'The provider status could not be verified. The in-app outbox remains available.' : 'The in-app outbox remains available; configure RESEND_API_KEY and EMAIL_FROM for external delivery.'} {emailIntegration === 'check-failed' && <button className="feature-button secondary" type="button" aria-label="Retry email integration check" onClick={() => setIntegrationCheck((value) => value + 1)}>Retry</button>}</p></div>
     <ReminderAutomation emailConfigured={emailConfigured} />
     {notice && <div className="feature-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={14}/></button></div>}
 
@@ -151,7 +178,7 @@ export function CommunicationsCenter() {
       </article>)}</aside>
 
       <section className="message-composer" aria-labelledby="message-composer-heading">
-        <div className="section-title"><div><h2 id="message-composer-heading">Compose and preview</h2><span>Template fields are rendered once per recipient.</span></div>{selectedTemplate && <button className="danger-link" onClick={() => { dispatch({ type: 'template/delete', id: selectedTemplate.id, at: nowIso() }); setSelectedTemplateId('') }}><Trash2 size={14}/>Delete</button>}</div>
+        <div className="section-title"><div><h2 id="message-composer-heading">Compose and preview</h2><span>Template fields are rendered once per recipient.</span></div>{selectedTemplate && <button className="danger-link" onClick={() => { if (!window.confirm(`Delete the “${selectedTemplate.name}” template? This cannot be undone.`)) return; dispatch({ type: 'template/delete', id: selectedTemplate.id, at: nowIso() }); setSelectedTemplateId('') }}><Trash2 size={14}/>Delete</button>}</div>
         {!selectedTemplate && <div className="communications-empty">Choose or create a template.</div>}
         {selectedTemplate && <>
           <label className="field-label">Audience<select value={audience} onChange={(event) => setAudience(event.target.value as MessageAudience)}><option value="accepted">Accepted speakers</option><option value="confirmed">Confirmed speakers</option><option value="incomplete-onboarding">Incomplete onboarding</option><option value="overdue-tasks">Overdue tasks</option><option value="custom">Specific speakers</option></select></label>
@@ -172,6 +199,8 @@ export function CommunicationsCenter() {
 function ReminderAutomation({ emailConfigured }: { emailConfigured: boolean }) {
   const { state, dispatch, persistenceMode } = useApp()
   const schedules = state.event.reminderSchedules ?? []
+  const [firstRunValues, setFirstRunValues] = useState<Record<string, string>>({})
+  const [firstRunErrors, setFirstRunErrors] = useState<Record<string, string>>({})
   const update = (schedule: ReminderSchedule) => dispatch({ type: 'event/update', patch: { reminderSchedules: schedules.map((item) => item.id === schedule.id ? schedule : item) }, at: nowIso() })
   const add = () => {
     const at = nowIso()
@@ -180,5 +209,19 @@ function ReminderAutomation({ emailConfigured }: { emailConfigured: boolean }) {
     const sendAt = new Date(Date.now() + 86_400_000).toISOString()
     dispatch({ type: 'event/update', patch: { reminderSchedules: [...schedules, { id: createId('reminder'), name: 'New reminder', templateId: firstTemplate.id, audience: firstTemplate.audience, enabled: false, cadence: 'daily', daysBeforeDue: 3, sendAt, nextRunAt: sendAt, timezone: state.event.timezone, createdAt: at, updatedAt: at }] }, at })
   }
-  return <section className="reminder-automation"><div className="section-title"><div><h2>Automated reminders</h2><span>Persisted schedules for due-date communications</span></div><button className="feature-button secondary" type="button" onClick={add}><Plus size={15}/>Add schedule</button></div><p className="automation-disclosure"><b>{persistenceMode === 'remote' && emailConfigured ? 'Delivery provider connected.' : 'Configuration only.'}</b> A deployed scheduler must execute enabled schedules while organizers are offline; this UI does not claim a run until the backend records one.</p>{schedules.map((schedule) => <div className="reminder-row" key={schedule.id}><label>Name<input value={schedule.name} onChange={(event) => update({ ...schedule, name: event.target.value, updatedAt: nowIso() })} /></label><label>Template<select value={schedule.templateId} onChange={(event) => update({ ...schedule, templateId: event.target.value, updatedAt: nowIso() })}>{state.templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label><label>Audience<select value={schedule.audience} onChange={(event) => update({ ...schedule, audience: event.target.value as MessageAudience, updatedAt: nowIso() })}><option value="accepted">Accepted</option><option value="confirmed">Confirmed</option><option value="incomplete-onboarding">Incomplete onboarding</option><option value="overdue-tasks">Overdue tasks</option></select></label><label>Cadence<select value={schedule.cadence} onChange={(event) => update({ ...schedule, cadence: event.target.value as ReminderSchedule['cadence'], updatedAt: nowIso() })}><option value="once">Once</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><label>First run<input type="datetime-local" value={(schedule.nextRunAt ?? schedule.sendAt ?? '').slice(0, 16)} onChange={(event) => { const nextRunAt = new Date(event.target.value).toISOString(); update({ ...schedule, sendAt: nextRunAt, nextRunAt: nextReminderRun({ ...schedule, nextRunAt }, nowIso()), updatedAt: nowIso() }) }} /></label><label className="checkbox-label"><input type="checkbox" checked={schedule.enabled} onChange={(event) => update({ ...schedule, enabled: event.target.checked, updatedAt: nowIso() })} />Enabled</label><button className="danger-link" type="button" onClick={() => dispatch({ type: 'event/update', patch: { reminderSchedules: schedules.filter((item) => item.id !== schedule.id) }, at: nowIso() })}><Trash2 size={14}/>Delete</button></div>)}</section>
+  return <section className="reminder-automation"><div className="section-title"><div><h2>Automated reminders</h2><span>Persisted schedules for due-date communications</span></div><button className="feature-button secondary" type="button" onClick={add}><Plus size={15}/>Add schedule</button></div><p className="automation-disclosure"><b>{persistenceMode === 'remote' && emailConfigured ? 'Delivery provider connected.' : 'Configuration only.'}</b> A deployed scheduler must execute enabled schedules while organizers are offline; this UI does not claim a run until the backend records one.</p>{schedules.map((schedule) => {
+    const errorId = `reminder-first-run-${schedule.id}-error`
+    const firstRunValue = firstRunValues[schedule.id] ?? (schedule.nextRunAt ?? schedule.sendAt ?? '').slice(0, 16)
+    return <div className="reminder-row" key={schedule.id}><label>Name<input value={schedule.name} onChange={(event) => update({ ...schedule, name: event.target.value, updatedAt: nowIso() })} /></label><label>Template<select value={schedule.templateId} onChange={(event) => update({ ...schedule, templateId: event.target.value, updatedAt: nowIso() })}>{state.templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label><label>Audience<select value={schedule.audience} onChange={(event) => update({ ...schedule, audience: event.target.value as MessageAudience, updatedAt: nowIso() })}><option value="accepted">Accepted</option><option value="confirmed">Confirmed</option><option value="incomplete-onboarding">Incomplete onboarding</option><option value="overdue-tasks">Overdue tasks</option></select></label><label>Cadence<select value={schedule.cadence} onChange={(event) => update({ ...schedule, cadence: event.target.value as ReminderSchedule['cadence'], updatedAt: nowIso() })}><option value="once">Once</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><label>First run<input type="datetime-local" required value={firstRunValue} aria-invalid={Boolean(firstRunErrors[schedule.id])} aria-describedby={firstRunErrors[schedule.id] ? errorId : undefined} onChange={(event) => {
+      const value = event.target.value
+      setFirstRunValues((values) => ({ ...values, [schedule.id]: value }))
+      const parsed = parseReminderDateTime(value)
+      if (!parsed) {
+        setFirstRunErrors((errors) => ({ ...errors, [schedule.id]: 'Choose a valid first run date and time.' }))
+        return
+      }
+      setFirstRunErrors((errors) => { const next = { ...errors }; delete next[schedule.id]; return next })
+      update({ ...schedule, sendAt: parsed, nextRunAt: nextReminderRun({ ...schedule, nextRunAt: parsed }, nowIso()), updatedAt: nowIso() })
+    }} />{firstRunErrors[schedule.id] && <small id={errorId} role="alert">{firstRunErrors[schedule.id]}</small>}</label><label className="checkbox-label"><input type="checkbox" checked={schedule.enabled} onChange={(event) => update({ ...schedule, enabled: event.target.checked, updatedAt: nowIso() })} />Enabled</label><button className="danger-link" type="button" onClick={() => { if (window.confirm(`Delete the “${schedule.name}” reminder schedule?`)) dispatch({ type: 'event/update', patch: { reminderSchedules: schedules.filter((item) => item.id !== schedule.id) }, at: nowIso() }) }}><Trash2 size={14}/>Delete</button></div>
+  })}</section>
 }

@@ -1,3 +1,4 @@
+// oxlint-disable react/only-export-components -- exported validation logic is covered by focused workflow tests.
 import { useState, type FormEvent } from 'react'
 import { Check, Copy, GripVertical, Plus, Trash2 } from 'lucide-react'
 import { createId, nowIso, useApp } from '../../core'
@@ -28,6 +29,20 @@ export interface CfpBuilderProps {
   publicPath?: string
 }
 
+export interface CfpQuestionValidationError {
+  questionId: string
+  field: 'label' | 'options'
+  message: string
+}
+
+export function validateCfpQuestions(questions: CfpQuestion[]): CfpQuestionValidationError | undefined {
+  const missingLabel = questions.find((question) => !question.label.trim())
+  if (missingLabel) return { questionId: missingLabel.id, field: 'label', message: 'Enter a question label.' }
+  const missingOptions = questions.find((question) => question.type === 'select' && !question.options?.some((option) => option.trim()))
+  if (missingOptions) return { questionId: missingOptions.id, field: 'options', message: `Add at least one option for “${missingOptions.label.trim()}”.` }
+  return undefined
+}
+
 export function CfpBuilder({ publicPath }: CfpBuilderProps) {
   const { state, dispatch } = useApp()
   const initial = state.event.cfp ?? defaultConfig
@@ -44,10 +59,12 @@ export function CfpBuilder({ publicPath }: CfpBuilderProps) {
   const [publishedAt, setPublishedAt] = useState(initial.publishedAt)
   const [saved, setSaved] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [questionError, setQuestionError] = useState<CfpQuestionValidationError>()
   const link = publicPath ?? `/events/${state.event.slug}/cfp`
 
   function updateQuestion(id: string, patch: Partial<CfpQuestion>) {
     setQuestions((items) => items.map((question) => question.id === id ? { ...question, ...patch } : question))
+    if (questionError?.questionId === id) setQuestionError(undefined)
   }
 
   function setCondition(id: string, field: '' | 'track' | 'format') {
@@ -67,7 +84,13 @@ export function CfpBuilder({ publicPath }: CfpBuilderProps) {
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const limit = Number(submissionLimit)
-    if (!closeAt || !Number.isInteger(limit) || limit < 1 || questions.some((question) => !question.label.trim() || (question.type === 'select' && !question.options?.some((option) => option.trim())))) return
+    const validationError = validateCfpQuestions(questions)
+    if (validationError) {
+      setQuestionError(validationError)
+      window.requestAnimationFrame(() => document.getElementById(`cfp-question-${validationError.questionId}-${validationError.field}`)?.focus())
+      return
+    }
+    if (!closeAt || !Number.isInteger(limit) || limit < 1) return
     const savedAt = nowIso()
     const config: CfpConfig = {
       open,
@@ -92,6 +115,7 @@ export function CfpBuilder({ publicPath }: CfpBuilderProps) {
     dispatch({ type: 'event/update', patch: { cfp: config }, at: savedAt })
     setVersion(config.version ?? version + 1)
     setPublishedAt(savedAt)
+    setQuestionError(undefined)
     setSaved(true)
     window.setTimeout(() => setSaved(false), 1800)
   }
@@ -149,9 +173,9 @@ export function CfpBuilder({ publicPath }: CfpBuilderProps) {
               <fieldset className="sb-question-editor" key={question.id}>
                 <legend className="sb-sr-only">Question {index + 1}</legend>
                 <GripVertical aria-hidden="true" className="sb-question-editor__grip" />
-                <label className="sb-question-editor__label">Question label<input required value={question.label} onChange={(event) => updateQuestion(question.id, { label: event.target.value })} /></label>
+                <label className="sb-question-editor__label">Question label<input id={`cfp-question-${question.id}-label`} required aria-invalid={questionError?.questionId === question.id && questionError.field === 'label'} aria-describedby={questionError?.questionId === question.id && questionError.field === 'label' ? `cfp-question-${question.id}-error` : undefined} value={question.label} onChange={(event) => updateQuestion(question.id, { label: event.target.value })} />{questionError?.questionId === question.id && questionError.field === 'label' && <small id={`cfp-question-${question.id}-error`} role="alert">{questionError.message}</small>}</label>
                 <label>Type<select value={question.type} onChange={(event) => updateQuestion(question.id, { type: event.target.value as CfpFieldType })}><option value="text">Short text</option><option value="textarea">Long text</option><option value="select">Select</option><option value="checkbox">Checkbox</option></select></label>
-                {question.type === 'select' && <label className="sb-question-editor__wide">Options<input required value={question.options?.join(', ') ?? ''} onChange={(event) => updateQuestion(question.id, { options: event.target.value.split(',') })} placeholder="Beginner, Intermediate, Advanced" /></label>}
+                {question.type === 'select' && <label className="sb-question-editor__wide">Options<input id={`cfp-question-${question.id}-options`} required aria-invalid={questionError?.questionId === question.id && questionError.field === 'options'} aria-describedby={questionError?.questionId === question.id && questionError.field === 'options' ? `cfp-question-${question.id}-error` : undefined} value={question.options?.join(', ') ?? ''} onChange={(event) => updateQuestion(question.id, { options: event.target.value.split(',') })} placeholder="Beginner, Intermediate, Advanced" />{questionError?.questionId === question.id && questionError.field === 'options' && <small id={`cfp-question-${question.id}-error`} role="alert">{questionError.message}</small>}</label>}
                 <label>Show when<select value={question.conditions?.[0] ? 'question' : question.showWhen?.field ?? ''} onChange={(event) => { if (event.target.value === 'question') setPriorAnswerCondition(question.id, questions.find((item) => item.id !== question.id)?.id ?? ''); else setCondition(question.id, event.target.value as '' | 'track' | 'format') }}><option value="">Always</option><option value="track">Track is…</option><option value="format">Format is…</option><option value="question">Prior answer is…</option></select></label>
                 {question.showWhen && <label>Equals<input required value={question.showWhen.equals} onChange={(event) => updateQuestion(question.id, { showWhen: { field: question.showWhen!.field, equals: event.target.value } })} list={`cfp-values-${question.id}`} /><datalist id={`cfp-values-${question.id}`}>{question.showWhen.field === 'track' ? state.event.tracks.map((item) => <option key={item}>{item}</option>) : ['Talk', 'Workshop', 'Panel', 'Lightning talk'].map((item) => <option key={item}>{item}</option>)}</datalist></label>}
                 {question.conditions?.[0] && <><label>Prior question<select value={question.conditions[0].field} onChange={(event) => updateQuestion(question.id, { conditions: [{ ...question.conditions![0], field: event.target.value }] })}>{questions.filter((item) => item.id !== question.id).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Answer equals<input required value={question.conditions[0].value} onChange={(event) => updateQuestion(question.id, { conditions: [{ ...question.conditions![0], value: event.target.value }] })} /></label></>}
