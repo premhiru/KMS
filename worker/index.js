@@ -292,6 +292,7 @@ export function validateAppStateDocument(state, expectedEventId) {
     const path = `communicationLog[${index}]`
     for (const field of ['subject', 'body', 'channel', 'status', 'sentAt']) stateString(entry, field, path, errors, field === 'body' ? 100_000 : 500)
     if (!Array.isArray(entry.recipientSpeakerIds) || !entry.recipientSpeakerIds.every((speakerId) => speakerIds.has(speakerId))) errors.push(`${path}.recipientSpeakerIds must reference known speakers.`)
+    if (entry.recipientEmails !== undefined && (!Array.isArray(entry.recipientEmails) || entry.recipientEmails.length > 500 || !entry.recipientEmails.every(validEmail))) errors.push(`${path}.recipientEmails must contain at most 500 valid addresses.`)
     if (!['in-app-outbox', 'email'].includes(entry.channel)) errors.push(`${path}.channel is invalid.`)
     if (!['queued', 'sent', 'failed'].includes(entry.status)) errors.push(`${path}.status is invalid.`)
     stateDate(entry, 'sentAt', path, errors)

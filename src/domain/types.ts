@@ -359,6 +359,7 @@ export interface CommunicationLog {
   id: Id
   templateId?: Id
   recipientSpeakerIds: Id[]
+  recipientEmails?: string[]
   subject: string
   body: string
   channel: 'in-app-outbox' | 'email'
