@@ -539,6 +539,7 @@
 .sb-category-grid svg { color: var(--sb-primary); grid-row: 1 / span 2; height: 19px; width: 19px; }
 .sb-category-grid strong { font-size: .78rem; }
 .sb-category-grid small { color: var(--sb-muted); font-size: .66rem; }
+.sb-category-grid label.is-selected small { color: #5f5b6d; }
 .sb-route-note { align-items: center; background: #f2f0fc; border-radius: 8px; color: #5c50bb; display: flex; font-size: .7rem; gap: 9px; margin-bottom: 18px; padding: 9px 11px; }
 .sb-route-note svg { height: 16px; width: 16px; }
 .sb-route-note strong { margin-right: 4px; }

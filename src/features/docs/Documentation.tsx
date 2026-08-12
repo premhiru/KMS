@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowRight,
   BookOpen,
@@ -56,7 +56,7 @@ function CodeTabs({ curl, javascript }: { curl: string; javascript: string }) {
 }
 
 function Method({ verb, children }: { verb: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'HEAD'; children: ReactNode }) {
-  return <div className="docs-endpoint"><span className={`method method-${verb.toLowerCase()}`}>{verb}</span><code>{children}</code></div>
+  return <div className="docs-endpoint" tabIndex={0}><span className={`method method-${verb.toLowerCase()}`}>{verb}</span><code>{children}</code></div>
 }
 
 function Callout({ tone = 'note', title, children }: { tone?: 'note' | 'success' | 'warning'; title: string; children: ReactNode }) {
@@ -78,6 +78,10 @@ export default function Documentation() {
   const [active, setActive] = useState(pathSection)
   const [query, setQuery] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia('(max-width: 780px)').matches)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase()
     if (!needle) return docsSections
@@ -102,6 +106,36 @@ export default function Documentation() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 780px)')
+    const update = () => setMobileNavigation(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    if (!mobileNavigation || !mobileOpen) return
+    closeButtonRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMobileOpen(false)
+        window.setTimeout(() => menuButtonRef.current?.focus(), 0)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = [...(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])]
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [mobileNavigation, mobileOpen])
 
   useEffect(() => {
     const navigate = () => {
@@ -130,6 +164,11 @@ export default function Documentation() {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  const closeMobileNavigation = () => {
+    setMobileOpen(false)
+    window.setTimeout(() => menuButtonRef.current?.focus(), 0)
+  }
+
   return <div className="docs-app">
     <a className="docs-skip" href="#docs-content">Skip to documentation</a>
     <header className="docs-topbar">
@@ -139,25 +178,25 @@ export default function Documentation() {
         <a href="https://github.com/premhiru/KMS" target="_blank" rel="noreferrer"><Code2 size={16} /> GitHub</a>
         <a className="docs-top-cta" href="#/cfp" target="_blank" rel="noreferrer">Open CFP <ArrowRight size={14} /></a>
       </nav>
-      <button className="docs-mobile-toggle" type="button" aria-label="Open documentation navigation" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
+      <button ref={menuButtonRef} className="docs-mobile-toggle" type="button" aria-label="Open documentation navigation" aria-expanded={mobileOpen} aria-controls="documentation-navigation" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
     </header>
 
     <div className="docs-layout">
-      {mobileOpen && <button className="docs-scrim" aria-label="Close documentation navigation" onClick={() => setMobileOpen(false)} />}
-      <aside className={`docs-sidebar ${mobileOpen ? 'open' : ''}`}>
-        <div className="docs-mobile-head"><strong>Documentation</strong><button aria-label="Close documentation navigation" onClick={() => setMobileOpen(false)}><X size={18} /></button></div>
+      {mobileOpen && <button className="docs-scrim" aria-label="Close documentation navigation" onClick={closeMobileNavigation} />}
+      <aside ref={sidebarRef} id="documentation-navigation" inert={mobileNavigation && !mobileOpen ? true : undefined} className={`docs-sidebar ${mobileOpen ? 'open' : ''}`}>
+        <div className="docs-mobile-head"><strong>Documentation</strong><button ref={closeButtonRef} aria-label="Close documentation navigation" onClick={closeMobileNavigation}><X size={18} /></button></div>
         <label className="docs-search"><Search size={15} /><span className="sr-only">Search documentation</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the docs…" /></label>
         <nav aria-label="Documentation sections">
           {(['Start', 'Build', 'Operate'] as const).map((group) => {
             const sections = matches.filter((section) => section.group === group)
-            return sections.length > 0 && <div className="docs-nav-group" key={group}><span>{group}</span>{sections.map((section) => <button className={active === section.id ? 'active' : ''} key={section.id} onClick={() => go(section.id)}><strong>{section.label}</strong><small>{section.summary}</small></button>)}</div>
+            return sections.length > 0 && <div className="docs-nav-group" key={group}><span>{group}</span>{sections.map((section) => <button className={active === section.id ? 'active' : ''} aria-current={active === section.id ? 'page' : undefined} key={section.id} onClick={() => go(section.id)}><strong>{section.label}</strong><small>{section.summary}</small></button>)}</div>
           })}
           {matches.length === 0 && <p className="docs-no-results">No sections match “{query}”.</p>}
         </nav>
         <div className="docs-sidebar-card"><Zap size={17} /><strong>Open source, production-shaped</strong><p>React, TypeScript, a Cloudflare Worker, D1, and R2.</p></div>
       </aside>
 
-      <main className="docs-content" id="docs-content">
+      <main className="docs-content" id="docs-content" tabIndex={-1}>
         <div className="docs-hero">
           <div><span className="docs-kicker"><Sparkles size={13} /> OpenSpeaker developer platform</span><h1>From first proposal<br />to published program.</h1><p>Build and operate the complete conference program lifecycle with an open-source, API-backed workspace.</p><div className="docs-hero-actions"><button onClick={() => go('quickstart')}>Start building <ArrowRight size={15} /></button><a href="https://github.com/premhiru/KMS" target="_blank" rel="noreferrer"><Code2 size={15} /> View source</a></div></div>
           <div className="docs-hero-code"><div><i /><i /><i /><span>create-submission.ts</span></div><pre tabIndex={0}><code><b>const</b> proposal = <b>await</b> fetch(<span>'/api/public/cfp/…'</span>, {'{'}
@@ -183,7 +222,7 @@ npm run dev`}</CodeBlock>
         </Section>
 
         <Section id="how-it-works" eyebrow="Concepts" title="How OpenSpeaker works" lead="One revisioned program model flows through organizers, reviewers, speakers, and public attendees.">
-          <div className="docs-flow" aria-label="Program lifecycle"><div><span>1</span><strong>Collect</strong><small>CFP forms and invited sessions</small></div><ArrowRight /><div><span>2</span><strong>Evaluate</strong><small>Rounds, rubrics, decisions</small></div><ArrowRight /><div><span>3</span><strong>Onboard</strong><small>Profiles, tasks, files</small></div><ArrowRight /><div><span>4</span><strong>Publish</strong><small>Agenda, embeds, feeds</small></div></div>
+          <div className="docs-flow" role="list" aria-label="Program lifecycle"><div role="listitem"><span>1</span><strong>Collect</strong><small>CFP forms and invited sessions</small></div><ArrowRight aria-hidden="true" /><div role="listitem"><span>2</span><strong>Evaluate</strong><small>Rounds, rubrics, decisions</small></div><ArrowRight aria-hidden="true" /><div role="listitem"><span>3</span><strong>Onboard</strong><small>Profiles, tasks, files</small></div><ArrowRight aria-hidden="true" /><div role="listitem"><span>4</span><strong>Publish</strong><small>Agenda, embeds, feeds</small></div></div>
           <div className="docs-card-grid"><article><Code2 /><h3>React client</h3><p>Role-aware workspaces share a typed domain model and reconcile optimistic changes.</p></article><article><Zap /><h3>Worker API</h3><p>Validates every write, enforces tenant and role boundaries, and orchestrates providers.</p></article><article><ShieldCheck /><h3>D1 + R2</h3><p>D1 stores revisioned records and audit history. R2 stores private event-scoped file bytes.</p></article><article><ExternalLink /><h3>Public read model</h3><p>Only accepted, published, confirmed program data reaches public pages and feeds.</p></article></div>
           <Callout tone="success" title="Privacy is projection-based"><p>Review notes, email addresses, tasks, source payloads, CRM notes, and unpublished content are omitted from anonymous responses at the server boundary.</p></Callout>
         </Section>
@@ -246,7 +285,7 @@ npm run dev`}</CodeBlock>
         </Section>
 
         <Section id="crm-airtable" eyebrow="Organization" title="Cross-event CRM and Airtable" lead="D1 remains the private, authoritative contact directory. Airtable is an optional one-way operational mirror.">
-          <div className="docs-flow compact" aria-label="CRM sync direction"><div><strong>Event speakers</strong><small>Normalized by email</small></div><ArrowRight /><div><strong>Workspace CRM</strong><small>D1 source of truth</small></div><ArrowRight /><div><strong>Airtable</strong><small>Safe outbound fields</small></div></div>
+          <div className="docs-flow compact" role="list" aria-label="CRM sync direction"><div role="listitem"><strong>Event speakers</strong><small>Normalized by email</small></div><ArrowRight aria-hidden="true" /><div role="listitem"><strong>Workspace CRM</strong><small>D1 source of truth</small></div><ArrowRight aria-hidden="true" /><div role="listitem"><strong>Airtable</strong><small>Safe outbound fields</small></div></div>
           <Method verb="GET">/api/workspaces/:workspaceId/crm</Method><Method verb="PUT">/api/workspaces/:workspaceId/crm</Method><Method verb="POST">/api/workspaces/:workspaceId/crm/actions/add-to-event</Method>
           <h3>Optional Airtable mirror</h3><Method verb="GET">/api/workspaces/:workspaceId/crm/integrations/airtable</Method><Method verb="POST">/api/workspaces/:workspaceId/crm/integrations/airtable/sync</Method><CodeBlock title="Run a one-way sync">{examples.airtableCurl}</CodeBlock>
           <Callout tone="success" title="Private CRM context stays private"><p>Internal notes, activity, pipeline rationale, segments, campaign previews, audit data, and tokens are deliberately excluded from Airtable and every public projection.</p></Callout>
@@ -270,7 +309,7 @@ npm audit --omit=dev`}</CodeBlock>
         </Section>
       </main>
 
-      <aside className="docs-toc"><span>On this page</span>{docsSections.map((section) => <button key={section.id} className={active === section.id ? 'active' : ''} onClick={() => go(section.id)}>{section.label}</button>)}<div><ShieldCheck size={15} /><p><strong>Security first</strong>Examples use placeholders. Keep all provider keys in hosted secrets.</p></div></aside>
+      <aside className="docs-toc"><span>On this page</span>{docsSections.map((section) => <button key={section.id} className={active === section.id ? 'active' : ''} aria-current={active === section.id ? 'page' : undefined} onClick={() => go(section.id)}>{section.label}</button>)}<div><ShieldCheck size={15} /><p><strong>Security first</strong>Examples use placeholders. Keep all provider keys in hosted secrets.</p></div></aside>
     </div>
   </div>
 }

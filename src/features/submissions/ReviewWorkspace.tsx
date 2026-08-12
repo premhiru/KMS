@@ -127,10 +127,10 @@ export function ReviewWorkspace({
                 {rows.length === 0 && <p className="sb-muted">No assignments match this reviewer and round.</p>}
               </div>
             </aside>
-            <main className="sb-review-main">
+            <section className="sb-review-main" aria-label="Proposal evaluation">
               {!selected && <div className="sb-empty"><ClipboardCheck aria-hidden="true" /><h2>No assigned proposal selected</h2><p>Ask an organizer to assign your signed-in email to an open evaluation round.</p></div>}
               {selected && <AssignmentReviewEditor key={selected.assignment.id} item={selected} reviews={state.reviews.filter((review) => review.submissionId === selected.submission.id && review.roundId === selected.round.id)} fallbackReviewerName={reviewerName} onSave={saveReview} onAbstain={abstain} onReopen={reopen} onDecide={currentReviewerEmail ? undefined : decide} />}
-            </main>
+            </section>
           </div>
         </>
       )}

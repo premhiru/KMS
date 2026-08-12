@@ -134,7 +134,7 @@ function ItineraryWidget({ records, state }: { records: PublicSessionRecord[]; s
 }
 
 function DayTabs({ days, selected, timezone, onSelect }: { days: string[]; selected: string; timezone: string; onSelect: (day: string) => void }) {
-  return <div className="public-day-tabs" aria-label="Event days">{days.map((day) => <button key={day} aria-pressed={selected === day} className={selected === day ? 'active' : ''} onClick={() => onSelect(day)}>{dayLabel(day, timezone, true)}</button>)}</div>
+  return <div className="public-day-tabs" role="group" aria-label="Event days">{days.map((day) => <button key={day} aria-pressed={selected === day} className={selected === day ? 'active' : ''} onClick={() => onSelect(day)}>{dayLabel(day, timezone, true)}</button>)}</div>
 }
 
 function WidgetHeading({ eyebrow, id, title, description }: { eyebrow: string; id: string; title: string; description: string }) {

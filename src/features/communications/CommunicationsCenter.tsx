@@ -150,8 +150,8 @@ export function CommunicationsCenter() {
         <button type="button" className="template-select" onClick={() => chooseTemplate(template)}><span className={`template-status ${template.enabled ? 'enabled' : ''}`}><Mail size={15}/></span><span><strong>{template.name}</strong><small>{template.subject}</small><em>{template.audience.replaceAll('-', ' ')}</em></span></button><button aria-label={`Edit ${template.name}`} onClick={() => editTemplate(template)}><Edit3 size={15}/></button>
       </article>)}</aside>
 
-      <main className="message-composer">
-        <div className="section-title"><div><h2>Compose and preview</h2><span>Template fields are rendered once per recipient.</span></div>{selectedTemplate && <button className="danger-link" onClick={() => { dispatch({ type: 'template/delete', id: selectedTemplate.id, at: nowIso() }); setSelectedTemplateId('') }}><Trash2 size={14}/>Delete</button>}</div>
+      <section className="message-composer" aria-labelledby="message-composer-heading">
+        <div className="section-title"><div><h2 id="message-composer-heading">Compose and preview</h2><span>Template fields are rendered once per recipient.</span></div>{selectedTemplate && <button className="danger-link" onClick={() => { dispatch({ type: 'template/delete', id: selectedTemplate.id, at: nowIso() }); setSelectedTemplateId('') }}><Trash2 size={14}/>Delete</button>}</div>
         {!selectedTemplate && <div className="communications-empty">Choose or create a template.</div>}
         {selectedTemplate && <>
           <label className="field-label">Audience<select value={audience} onChange={(event) => setAudience(event.target.value as MessageAudience)}><option value="accepted">Accepted speakers</option><option value="confirmed">Confirmed speakers</option><option value="incomplete-onboarding">Incomplete onboarding</option><option value="overdue-tasks">Overdue tasks</option><option value="custom">Specific speakers</option></select></label>
@@ -160,7 +160,7 @@ export function CommunicationsCenter() {
           <div className="message-preview"><span>PREVIEW {previewSpeaker ? `FOR ${speakerName(previewSpeaker).toUpperCase()}` : ''}</span><h3>{preview?.subject ?? selectedTemplate.subject}</h3><p>{preview?.body ?? selectedTemplate.body}</p>{preview && preview.unresolvedTokens.length > 0 && <small>Unresolved for this recipient: {preview.unresolvedTokens.join(', ')}</small>}</div>
           <div className="feature-actions"><button className="feature-button secondary send-button" onClick={sendToOutbox}><Send size={16}/>Save to outbox</button>{persistenceMode === 'remote' && <button className="feature-button primary send-button" disabled={!emailConfigured || sending} onClick={sendExternal}><Send size={16}/>{sending ? 'Sending…' : 'Send email + calendar'}</button>}</div>
         </>}
-      </main>
+      </section>
     </div>
 
     <section className="outbox"><div className="section-title"><div><h2>Delivery log</h2><span>Durable messages created in this browser</span></div><button className="feature-button secondary" onClick={() => downloadIcs(`${state.event.slug}-calendar.ics`, agendaToIcs(state))}><Download size={15}/>Agenda ICS</button></div>{outbox.length === 0 && <div className="communications-empty">No messages sent yet.</div>}{outbox.map((entry) => { const speaker = state.speakers.find((item) => item.id === entry.recipientSpeakerIds[0]); return <article key={entry.id}><span><Check size={14}/></span><div><strong>{entry.subject}</strong><small>To {speaker ? `${speakerName(speaker)} · ${speaker.email}` : 'Unknown recipient'}</small></div><time>{new Date(entry.sentAt).toLocaleString()}</time><em>{entry.channel.replaceAll('-', ' ')}</em></article> })}</section>

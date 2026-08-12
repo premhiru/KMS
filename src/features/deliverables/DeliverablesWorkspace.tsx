@@ -3,11 +3,80 @@ import { createId, nowIso, speakerName, useApp } from '../../core'
 import { createZip } from './zip'
 import './deliverables.css'
 
-type Filter = 'all'|'incomplete'|'complete'|'overdue'|'pending'
+type Filter = 'all' | 'incomplete' | 'complete' | 'overdue' | 'pending'
+
 export function DeliverablesWorkspace() {
-  const { state, dispatch, downloadAsset } = useApp(); const [filter,setFilter]=useState<Filter>('all'); const [selected,setSelected]=useState<string[]>([]); const [message,setMessage]=useState('')
-  const rows = useMemo(() => state.tasks.map((task) => ({ task, speaker: state.speakers.find((item)=>item.id===task.speakerId), submission: state.submissions.find((item)=>item.id===task.submissionId) })).filter(({task}) => filter==='all'||filter==='complete'&&!!task.completedAt||filter==='incomplete'&&!task.completedAt||filter==='overdue'&&!task.completedAt&&new Date(task.dueAt)<new Date()||filter==='pending'&&task.approvalStatus==='pending'), [state.tasks,state.speakers,state.submissions,filter])
-  const remind = () => { const speakerIds=[...new Set(rows.filter(({task})=>selected.includes(task.id)&&!task.completedAt).map(({task})=>task.speakerId))]; if(!speakerIds.length)return; const at=nowIso(); dispatch({type:'communication/log',entry:{id:createId('communication'),recipientSpeakerIds:speakerIds,subject:`${state.event.name} deliverables reminder`,body:'Please review and complete your outstanding speaker deliverables.',channel:'in-app-outbox',status:'queued',sentAt:at},at}); setMessage(`Queued reminders for ${speakerIds.length} speakers.`) }
-  const exportZip = async () => { const downloadable=rows.filter(({task})=>selected.includes(task.id)&&task.asset?.id); const entries=await Promise.all(downloadable.map(async({task,speaker})=>{const result=await downloadAsset(task.asset!.id!);return{name:`${speaker?speakerName(speaker):'speaker'}/${task.title}/v${task.assetVersion??1}-${result.fileName}`,bytes:new Uint8Array(await result.blob.arrayBuffer())}})); if(!entries.length)return setMessage('Select at least one stored file.'); const href=URL.createObjectURL(createZip(entries)); const link=document.createElement('a');link.href=href;link.download=`${state.event.slug}-deliverables.zip`;link.click();URL.revokeObjectURL(href);setMessage(`Exported ${entries.length} files.`) }
-  return <div className="deliverables"><header><div><p>Content operations</p><h1>Deliverables library</h1><span>Review every task, file version, approval, and conversation in one matrix.</span></div><select aria-label="Filter deliverables" value={filter} onChange={(e)=>setFilter(e.target.value as Filter)}><option value="all">All deliverables</option><option value="incomplete">Incomplete</option><option value="complete">Complete</option><option value="overdue">Overdue</option><option value="pending">Pending approval</option></select></header><div className="deliverables-actions"><button onClick={remind}>Queue reminder</button><button onClick={()=>void exportZip()}>Export selected ZIP</button><span role="status">{message}</span></div><div className="deliverables-table" role="table" aria-label="Speaker deliverables"><div role="row" className="deliverables-head"><span>Select</span><span>Speaker</span><span>Deliverable</span><span>Due</span><span>Status</span><span>Files</span></div>{rows.map(({task,speaker,submission})=><div role="row" key={task.id}><span><input aria-label={`Select ${task.title}`} type="checkbox" checked={selected.includes(task.id)} onChange={(e)=>setSelected(e.target.checked?[...selected,task.id]:selected.filter(id=>id!==task.id))}/></span><span>{speaker?speakerName(speaker):'Unknown speaker'}</span><span><strong>{task.title}</strong>{submission&&<small>{submission.title}</small>}{task.instructions&&<small>{task.instructions}</small>}</span><span>{new Date(task.dueAt).toLocaleDateString()}</span><span>{task.approvalStatus??(task.completedAt?'complete':'open')}</span><span>{task.asset?<details><summary>{task.asset.name} · v{task.assetVersion??1}</summary><ul>{task.deliverableVersions?.map((version)=><li key={version.id}>v{version.version} · {version.asset.name} · {version.uploadedBy}</li>)}</ul>{task.comments?.map((comment)=><p key={comment.id}><strong>{comment.authorName}</strong>: {comment.body}</p>)}</details>:'No file'}</span></div>)}</div></div>
+  const { state, dispatch, downloadAsset } = useApp()
+  const [filter, setFilter] = useState<Filter>('all')
+  const [selected, setSelected] = useState<string[]>([])
+  const [message, setMessage] = useState('')
+  const rows = useMemo(() => state.tasks
+    .map((task) => ({
+      task,
+      speaker: state.speakers.find((item) => item.id === task.speakerId),
+      submission: state.submissions.find((item) => item.id === task.submissionId),
+    }))
+    .filter(({ task }) => filter === 'all'
+      || filter === 'complete' && !!task.completedAt
+      || filter === 'incomplete' && !task.completedAt
+      || filter === 'overdue' && !task.completedAt && new Date(task.dueAt) < new Date()
+      || filter === 'pending' && task.approvalStatus === 'pending'), [state.tasks, state.speakers, state.submissions, filter])
+
+  const remind = () => {
+    const speakerIds = [...new Set(rows.filter(({ task }) => selected.includes(task.id) && !task.completedAt).map(({ task }) => task.speakerId))]
+    if (!speakerIds.length) return
+    const at = nowIso()
+    dispatch({
+      type: 'communication/log',
+      entry: {
+        id: createId('communication'),
+        recipientSpeakerIds: speakerIds,
+        subject: `${state.event.name} deliverables reminder`,
+        body: 'Please review and complete your outstanding speaker deliverables.',
+        channel: 'in-app-outbox',
+        status: 'queued',
+        sentAt: at,
+      },
+      at,
+    })
+    setMessage(`Queued reminders for ${speakerIds.length} speakers.`)
+  }
+
+  const exportZip = async () => {
+    const downloadable = rows.filter(({ task }) => selected.includes(task.id) && task.asset?.id)
+    const entries = await Promise.all(downloadable.map(async ({ task, speaker }) => {
+      const result = await downloadAsset(task.asset!.id!)
+      return {
+        name: `${speaker ? speakerName(speaker) : 'speaker'}/${task.title}/v${task.assetVersion ?? 1}-${result.fileName}`,
+        bytes: new Uint8Array(await result.blob.arrayBuffer()),
+      }
+    }))
+    if (!entries.length) return setMessage('Select at least one stored file.')
+    const href = URL.createObjectURL(createZip(entries))
+    const link = document.createElement('a')
+    link.href = href
+    link.download = `${state.event.slug}-deliverables.zip`
+    link.click()
+    URL.revokeObjectURL(href)
+    setMessage(`Exported ${entries.length} files.`)
+  }
+
+  return <div className="deliverables">
+    <header>
+      <div><p>Content operations</p><h1>Deliverables library</h1><span>Review every task, file version, approval, and conversation in one matrix.</span></div>
+      <select aria-label="Filter deliverables" value={filter} onChange={(event) => setFilter(event.target.value as Filter)}><option value="all">All deliverables</option><option value="incomplete">Incomplete</option><option value="complete">Complete</option><option value="overdue">Overdue</option><option value="pending">Pending approval</option></select>
+    </header>
+    <div className="deliverables-actions"><button onClick={remind}>Queue reminder</button><button onClick={() => void exportZip()}>Export selected ZIP</button><span role="status">{message}</span></div>
+    <div className="deliverables-table" role="table" aria-label="Speaker deliverables">
+      <div role="row" className="deliverables-head"><span role="columnheader">Select</span><span role="columnheader">Speaker</span><span role="columnheader">Deliverable</span><span role="columnheader">Due</span><span role="columnheader">Status</span><span role="columnheader">Files</span></div>
+      {rows.map(({ task, speaker, submission }) => <div role="row" key={task.id}>
+        <span role="cell"><input aria-label={`Select ${task.title}`} type="checkbox" checked={selected.includes(task.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, task.id] : selected.filter((id) => id !== task.id))} /></span>
+        <span role="cell">{speaker ? speakerName(speaker) : 'Unknown speaker'}</span>
+        <span role="cell"><strong>{task.title}</strong>{submission && <small>{submission.title}</small>}{task.instructions && <small>{task.instructions}</small>}</span>
+        <span role="cell">{new Date(task.dueAt).toLocaleDateString()}</span>
+        <span role="cell">{task.approvalStatus ?? (task.completedAt ? 'complete' : 'open')}</span>
+        <span role="cell">{task.asset ? <details><summary>{task.asset.name} · v{task.assetVersion ?? 1}</summary><ul>{task.deliverableVersions?.map((version) => <li key={version.id}>v{version.version} · {version.asset.name} · {version.uploadedBy}</li>)}</ul>{task.comments?.map((comment) => <p key={comment.id}><strong>{comment.authorName}</strong>: {comment.body}</p>)}</details> : 'No file'}</span>
+      </div>)}
+    </div>
+  </div>
 }

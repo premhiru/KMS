@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type ComponentType, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ComponentType, type FormEvent } from 'react'
 import {
   BookOpen,
   BookMarked,
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import './shell.css'
+import './responsive-polish.css'
 import { createId, useApp } from './core'
 import type { WorkspaceEventSummary } from './services'
 import { AgendaBuilder } from './features/agenda'
@@ -154,6 +155,40 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [reviewSubmissionId, setReviewSubmissionId] = useState<string>()
+  const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia('(max-width: 900px)').matches)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 900px)')
+    const update = () => setMobileNavigation(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    if (!mobileNavigation || !sidebarOpen) return
+    closeButtonRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setSidebarOpen(false)
+        window.setTimeout(() => menuButtonRef.current?.focus(), 0)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = [...(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])]
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [mobileNavigation, sidebarOpen])
 
   if (syncStatus === 'loading') {
     return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Opening OpenSpeaker</h1><p>Loading the shared event workspace…</p></main>
@@ -164,7 +199,7 @@ export default function App() {
   }
 
   if (route === 'cfp') {
-    return <main className="public-surface"><PublicCfp /></main>
+    return <div className="public-surface"><PublicCfp /></div>
   }
 
   if (route === 'event') {
@@ -193,16 +228,21 @@ export default function App() {
     setSidebarOpen(false)
   }
 
+  function closeNavigation() {
+    setSidebarOpen(false)
+    window.setTimeout(() => menuButtonRef.current?.focus(), 0)
+  }
+
   return <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
     <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById('main-content')?.focus() }}>Skip to main content</a>
-    {sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
-    <aside className={`shell-sidebar ${sidebarOpen ? 'mobile-open' : ''}`}>
+    {sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={closeNavigation} />}
+    <aside ref={sidebarRef} id="organizer-navigation" inert={mobileNavigation && !sidebarOpen ? true : undefined} className={`shell-sidebar ${sidebarOpen ? 'mobile-open' : ''}`}>
       <div className="shell-brand">
         <button className="brand-button" onClick={() => go('dashboard')} aria-label="Open overview">
           <span className="brand-mark"><Sparkles size={18} /></span>
           <span className="brand-copy"><strong>OpenSpeaker</strong><small>Program operations</small></span>
         </button>
-        <button className="mobile-close" aria-label="Close navigation" onClick={() => setSidebarOpen(false)}><X size={19} /></button>
+        <button ref={closeButtonRef} className="mobile-close" aria-label="Close navigation" onClick={closeNavigation}><X size={19} /></button>
       </div>
       <div className="event-summary">
         <span>{state.event.name.slice(0, 2).toUpperCase()}</span>
@@ -212,22 +252,22 @@ export default function App() {
       <nav className="shell-nav" aria-label="Organizer workspace">
         {navGroups.map((group) => <div className="nav-group" key={group.label}>
           <span className="nav-label">{group.label}</span>
-          {group.items.map((item) => <button key={item.route} className={route === item.route ? 'active' : ''} onClick={() => go(item.route)} title={item.label}>
+          {group.items.map((item) => <button key={item.route} className={route === item.route ? 'active' : ''} aria-current={route === item.route ? 'page' : undefined} onClick={() => go(item.route)} title={item.label}>
             <item.icon size={18} /><span>{item.label}</span>
             {item.route === 'submissions' && <em>{state.submissions.filter((entry) => entry.status === 'needs-review' || entry.status === 'in-review').length}</em>}
           </button>)}
         </div>)}
       </nav>
       <div className="sidebar-footer">
-        <button className={route === 'admin' ? 'active' : ''} onClick={() => go('admin')}><ShieldCheck size={18} /><span>Access & audit</span></button>
-        <button className={route === 'settings' ? 'active' : ''} onClick={() => go('settings')}><Settings size={18} /><span>Settings & data</span></button>
+        <button className={route === 'admin' ? 'active' : ''} aria-current={route === 'admin' ? 'page' : undefined} onClick={() => go('admin')}><ShieldCheck size={18} /><span>Access & audit</span></button>
+        <button className={route === 'settings' ? 'active' : ''} aria-current={route === 'settings' ? 'page' : undefined} onClick={() => go('settings')}><Settings size={18} /><span>Settings & data</span></button>
         <div className="organizer-profile"><span>{(session?.user.name || 'Event organizer').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span><div><strong>{session?.user.name || 'Event organizer'}</strong><small>{session?.role ?? 'Local preview'}</small></div></div>
       </div>
     </aside>
     <section className="shell-main">
       <header className="shell-header">
         <div className="header-context">
-          <button className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
+          <button ref={menuButtonRef} className="mobile-menu" aria-label="Open navigation" aria-expanded={sidebarOpen} aria-controls="organizer-navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
           <button className="desktop-collapse" aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'} onClick={() => setSidebarCollapsed((value) => !value)}>{sidebarCollapsed ? <PanelLeft size={20} /> : <ChevronLeft size={20} />}</button>
           <div><small>{state.event.name}</small><strong>{routeTitles[route]}</strong></div>
         </div>
