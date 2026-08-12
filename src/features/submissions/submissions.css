@@ -563,6 +563,16 @@
 .sb-confirmation dl div + div { border-top: 1px solid var(--sb-line); }
 .sb-confirmation dt { color: var(--sb-muted); font-size: .7rem; }
 .sb-confirmation dd { font-size: .78rem; font-weight: 700; margin: 0; overflow-wrap: anywhere; }
+.sb-cfp-access { background: #fff; border: 1px solid var(--sb-line); border-radius: 14px; box-shadow: 0 10px 36px #2924380d; margin: -42px auto 22px; max-width: 780px; padding: 18px 20px; position: relative; width: calc(100% - 32px); }
+.sb-confirmation .sb-cfp-access { box-shadow: none; margin: 20px 0; padding: 16px; text-align: left; width: auto; }
+.sb-cfp-access > div { align-items: center; display: flex; gap: 10px; }
+.sb-cfp-access > div svg { color: var(--sb-primary); flex: 0 0 auto; }
+.sb-cfp-access > div span { display: grid; gap: 2px; }
+.sb-cfp-access > div small { color: var(--sb-muted); line-height: 1.4; }
+.sb-cfp-access form { align-items: end; display: grid; gap: 10px; grid-template-columns: minmax(220px, 1fr) auto; margin-top: 13px; }
+.sb-cfp-access label { color: var(--sb-muted); display: grid; font-size: .68rem; font-weight: 700; gap: 5px; text-align: left; }
+.sb-cfp-access input { border: 1px solid var(--sb-line); border-radius: 8px; font: inherit; padding: 10px 11px; }
+.sb-cfp-access > p { font-size: .72rem; line-height: 1.5; margin: 10px 0 0; text-align: left; }
 
 .sb-review-layout { align-items: start; display: grid; gap: 16px; grid-template-columns: 310px minmax(0, 1fr); }
 .sb-review-queue, .sb-review-main { background: #fff; border: 1px solid var(--sb-line); border-radius: 12px; }
@@ -733,6 +743,9 @@
   .sb-cfp-form { border-radius: 12px; margin-left: 10px; margin-right: 10px; }
   .sb-cfp-submit { align-items: stretch; flex-direction: column; }
   .sb-confirmation dl div { grid-template-columns: 1fr; gap: 4px; }
+  .sb-cfp-access { margin-top: -54px; }
+  .sb-confirmation .sb-cfp-access { margin-top: 18px; }
+  .sb-cfp-access form { align-items: stretch; grid-template-columns: 1fr; }
   .sb-detail__heading, .sb-review-title { flex-direction: column; }
   .sb-score, .sb-aggregate { align-self: stretch; }
   .sb-criteria fieldset { gap: 10px; }

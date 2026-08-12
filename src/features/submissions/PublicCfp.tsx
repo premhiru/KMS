@@ -1,5 +1,5 @@
-import { cloneElement, isValidElement, useMemo, useState, type FormEvent, type ReactElement } from 'react'
-import { ArrowRight, CalendarClock, CheckCircle2, Route, Sparkles, UserPlus } from 'lucide-react'
+import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, type FormEvent, type ReactElement } from 'react'
+import { ArrowRight, CalendarClock, CheckCircle2, KeyRound, Route, Sparkles, UserPlus } from 'lucide-react'
 import { createSpeaker, createSubmission, nowIso, useApp } from '../../core'
 import type { CfpQuestion, Id } from '../../domain'
 import './submissions.css'
@@ -41,7 +41,7 @@ export interface PublicCfpProps {
 }
 
 export function PublicCfp({ onSubmitted }: PublicCfpProps) {
-  const { state, dispatch, persistenceMode, submitCfp } = useApp()
+  const { state, dispatch, persistenceMode, submitCfp, requestCfpClaim, verifyCfpClaim } = useApp()
   const cfp = state.event.cfp
   const categories = cfp?.routingRules?.filter((rule) => rule.enabled).map((rule) => ({ value: rule.category, label: rule.label, trackHints: [rule.track] })) ?? fallbackCategories
   const formats = cfp?.formats?.length ? cfp.formats : [{ name: 'Talk', durationMinutes: 30 }, { name: 'Workshop', durationMinutes: 60 }, { name: 'Panel', durationMinutes: 45 }, { name: 'Lightning talk', durationMinutes: 10 }]
@@ -56,6 +56,32 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
   const [submitted, setSubmitted] = useState<{ id: Id; title: string; email: string }>()
   const [submitting, setSubmitting] = useState(false)
   const [serverError, setServerError] = useState<string>()
+  const [claimEmail, setClaimEmail] = useState('')
+  const [claimStatus, setClaimStatus] = useState<'idle' | 'requesting' | 'sent' | 'verifying' | 'failed'>('idle')
+  const [claimMessage, setClaimMessage] = useState('')
+  const claimVerificationStarted = useRef(false)
+  const claimToken = useMemo(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('claimToken') ?? params.get('cfpClaim')
+  }, [])
+
+  useEffect(() => {
+    if (!claimToken || persistenceMode === 'local' || claimVerificationStarted.current) return
+    claimVerificationStarted.current = true
+    setClaimStatus('verifying')
+    setClaimMessage('Verifying your one-time access link…')
+    void verifyCfpClaim(claimToken).then((receipt) => {
+      const next = new URL(window.location.href)
+      next.searchParams.delete('claimToken')
+      next.searchParams.delete('cfpClaim')
+      next.searchParams.set('eventId', receipt.eventId)
+      next.hash = '/portal'
+      window.location.replace(next.toString())
+    }).catch(() => {
+      setClaimStatus('failed')
+      setClaimMessage('This access link is invalid, expired, or already used. Request a new link below.')
+    })
+  }, [claimToken, persistenceMode, verifyCfpClaim])
 
   const visibleQuestions = useMemo(() => (cfp?.questions ?? []).filter((question) => {
     if (question.conditions?.length) return question.conditions.every((condition) => {
@@ -147,6 +173,7 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
           cfpVersion: cfp?.version ?? 1,
         })
         setSubmitted({ id: receipt.id, title: proposal.title.trim(), email: speaker.email.trim().toLowerCase() })
+        setClaimEmail(speaker.email.trim().toLowerCase())
         onSubmitted?.(receipt.id)
       } catch (error) {
         setServerError(error instanceof Error ? error.message : 'The proposal could not be submitted. Please try again.')
@@ -188,7 +215,32 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
     }, at)
     dispatch({ type: 'submission/create', submission: { ...submission, origin: 'cfp', cfpVersion: cfp?.version ?? 1 }, at })
     setSubmitted({ id: submission.id, title: submission.title, email: primary.email })
+    setClaimEmail(primary.email)
     onSubmitted?.(submission.id)
+  }
+
+  async function requestAccess(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const email = claimEmail.trim().toLowerCase()
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setClaimStatus('failed')
+      setClaimMessage('Enter the email address used for your proposal.')
+      return
+    }
+    const returnUrl = new URL(window.location.href)
+    returnUrl.searchParams.delete('claimToken')
+    returnUrl.searchParams.delete('cfpClaim')
+    returnUrl.hash = '/cfp'
+    setClaimStatus('requesting')
+    setClaimMessage('')
+    try {
+      await requestCfpClaim({ email, returnUrl: returnUrl.toString() })
+      setClaimStatus('sent')
+      setClaimMessage('If that address is associated with this event, a one-time access link is on its way. Check your inbox and spam folder.')
+    } catch (error) {
+      setClaimStatus('failed')
+      setClaimMessage(error instanceof Error ? error.message : 'The access link could not be requested. Please try again.')
+    }
   }
 
   function startAnother() {
@@ -200,15 +252,20 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
     setSubmitted(undefined)
   }
 
+  if (claimToken && claimStatus === 'verifying') {
+    return <main className="sb-cfp-public sb-cfp-public--confirmation"><div className="sb-confirmation" role="status"><span className="sb-confirmation__icon"><KeyRound aria-hidden="true" /></span><p className="sb-eyebrow">Secure speaker access</p><h1>Opening your proposal dashboard</h1><p>{claimMessage}</p></div></main>
+  }
+
   if (submitted) {
     return (
       <main className="sb-cfp-public sb-cfp-public--confirmation">
-        <div className="sb-confirmation" role="status">
+        <div className="sb-confirmation">
           <span className="sb-confirmation__icon"><CheckCircle2 aria-hidden="true" /></span>
-          <p className="sb-eyebrow">Proposal received</p>
+          <p className="sb-eyebrow" role="status">Proposal received</p>
           <h1>Thank you, {speaker.firstName}.</h1>
           <p>{cfp?.thankYouMessage ?? 'Thanks for submitting. We will be in touch after committee review.'}</p>
           <dl><div><dt>Proposal</dt><dd>{submitted.title}</dd></div><div><dt>Contact email</dt><dd>{submitted.email}</dd></div><div><dt>Reference</dt><dd>{submitted.id}</dd></div></dl>
+          {persistenceMode !== 'local' && <ClaimAccessForm email={claimEmail} status={claimStatus} message={claimMessage} onEmailChange={setClaimEmail} onSubmit={requestAccess} />}
           {cfp?.allowMultiple && <button className="sb-button sb-button--primary" type="button" onClick={startAnother}>Submit another proposal <ArrowRight aria-hidden="true" /></button>}
         </div>
       </main>
@@ -224,6 +281,8 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
         <p>{cfp?.welcomeMessage ?? 'Share your best practical lessons with our community.'}</p>
         {cfp && <span className="sb-cfp-deadline"><CalendarClock aria-hidden="true" />Closes {new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeStyle: 'short' }).format(new Date(cfp.closeAt))}</span>}
       </header>
+
+      {persistenceMode !== 'local' && <ClaimAccessForm email={claimEmail} status={claimStatus} message={claimMessage} onEmailChange={setClaimEmail} onSubmit={requestAccess} />}
 
       {closed ? (
         <section className="sb-cfp-form sb-empty"><CalendarClock aria-hidden="true" /><h2>Submissions are closed</h2><p>The call for speakers is not accepting new proposals.</p></section>
@@ -269,6 +328,18 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
       )}
     </main>
   )
+}
+
+interface ClaimAccessFormProps {
+  email: string
+  status: 'idle' | 'requesting' | 'sent' | 'verifying' | 'failed'
+  message: string
+  onEmailChange: (email: string) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+}
+
+function ClaimAccessForm({ email, status, message, onEmailChange, onSubmit }: ClaimAccessFormProps) {
+  return <section className="sb-cfp-access" aria-labelledby="cfp-access-title"><div><KeyRound aria-hidden="true" /><span><strong id="cfp-access-title">Already submitted?</strong><small>Use a one-time email link to view and edit only your proposals. No password is stored.</small></span></div><form onSubmit={onSubmit}><label><span>Email used for your proposal</span><input required type="email" autoComplete="email" value={email} onChange={(event) => onEmailChange(event.target.value)} /></label><button className="sb-button sb-button--primary" disabled={status === 'requesting'}>{status === 'requesting' ? 'Requesting…' : status === 'sent' ? 'Send another link' : 'Email me a secure access link'}</button></form>{message && <p className={status === 'failed' ? 'sb-field__error' : ''} role={status === 'failed' ? 'alert' : 'status'}>{message}</p>}</section>
 }
 
 interface FieldProps {

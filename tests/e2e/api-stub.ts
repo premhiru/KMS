@@ -2,6 +2,8 @@ import type { Page, Route } from '@playwright/test'
 import { createSeedState } from '../../src/domain/seed'
 import type { AppState, Review } from '../../src/domain/types'
 import type { WorkspaceRole } from '../../src/services/contracts'
+import { defaultStages } from '../../src/features/crm/model'
+import type { CrmDocument } from '../../src/features/crm/types'
 
 type Role = Extract<WorkspaceRole, 'owner' | 'organizer' | 'reviewer' | 'speaker'>
 
@@ -21,6 +23,12 @@ export interface ApiStubControl {
   portalWrites: Array<Record<string, unknown>>
   reviewWrites: Array<Record<string, unknown>>
   cfpSubmissions: Array<Record<string, unknown>>
+  claimRequests: Array<Record<string, unknown>>
+  claimVerifications: string[]
+  feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }>
+  readonly crm: CrmDocument
+  readonly crmRevision: number
+  crmWrites: CrmDocument[]
   failNextStateWrite(): void
   failNextReviewWrite(): void
 }
@@ -67,11 +75,28 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   let rejectNextStateWrite = Boolean(options.failNextStateWrite)
   let rejectNextReviewWrite = Boolean(options.failNextReviewWrite)
   const role = options.role ?? 'owner'
-  const email = options.email ?? (role === 'reviewer' ? 'sarah@example.com' : role === 'speaker' ? 'priya@example.com' : 'owner@example.com')
+  let email = options.email ?? (role === 'reviewer' ? 'sarah@example.com' : role === 'speaker' ? 'priya@example.com' : 'owner@example.com')
   const stateWrites: AppState[] = []
   const portalWrites: Array<Record<string, unknown>> = []
   const reviewWrites: Array<Record<string, unknown>> = []
   const cfpSubmissions: Array<Record<string, unknown>> = []
+  const claimRequests: Array<Record<string, unknown>> = []
+  const claimVerifications: string[] = []
+  const feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }> = []
+  let crmRevision = 1
+  let crm: CrmDocument = {
+    contacts: currentState.speakers.map((speaker) => ({
+      id: `crm-${speaker.id}`, firstName: speaker.firstName, lastName: speaker.lastName, email: speaker.email, company: speaker.company, jobTitle: speaker.jobTitle, bio: speaker.bio,
+      photoUrl: speaker.photoUrl, linkedinUrl: speaker.linkedinUrl, twitterUrl: speaker.twitterUrl, travelPreferences: speaker.travelPreferences,
+      tags: [], customFields: {}, notes: [], activity: [{ id: `activity-${speaker.id}`, type: 'created', summary: 'Imported from event speaker.', createdAt: speaker.createdAt }],
+      eventLinks: [{ eventId: currentState.event.id, eventName: currentState.event.name, speakerId: speaker.id, sessionTitles: currentState.submissions.filter((submission) => submission.speakerIds.includes(speaker.id)).map((submission) => submission.title), linkedAt: speaker.createdAt }],
+      createdAt: speaker.createdAt, updatedAt: speaker.updatedAt,
+    })),
+    segments: [], stages: clone(defaultStages), pipeline: [], campaigns: [], updatedAt: currentState.lastUpdatedAt,
+  }
+  const crmWrites: CrmDocument[] = []
+  let claimedEmail = ''
+  let claimedPortalOnly = false
 
   const openRound = currentState.evaluationRounds?.find((round) => round.status === 'open')
   if (openRound) {
@@ -86,6 +111,12 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     portalWrites,
     reviewWrites,
     cfpSubmissions,
+    claimRequests,
+    claimVerifications,
+    feedRequests,
+    get crm() { return crm },
+    get crmRevision() { return crmRevision },
+    crmWrites,
     failNextStateWrite() { rejectNextStateWrite = true },
     failNextReviewWrite() { rejectNextReviewWrite = true },
   }
@@ -100,6 +131,47 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
 
     if (path === '/api/health') return json(route, { data: { status: 'ok', database: 'ok', files: true, timestamp: new Date().toISOString() } })
 
+    const feedMatch = path.match(/\/api\/public\/events\/[^/]+\/[^/]+\/feeds\/program\.(json|xml|ics)$/)
+    if (feedMatch && (method === 'GET' || method === 'HEAD')) {
+      const format = feedMatch[1]
+      const filters = Object.fromEntries(['track', 'format', 'room'].flatMap((key) => url.searchParams.has(key) ? [[key, url.searchParams.get(key)!]] : []))
+      feedRequests.push({ method, format, filters })
+      const acceptedIds = new Set(currentState.submissions.filter((submission) => submission.status === 'accepted').map((submission) => submission.id))
+      const sessions = currentState.sessions.filter((session) => session.published && acceptedIds.has(session.submissionId)).flatMap((session) => {
+        const submission = currentState.submissions.find((item) => item.id === session.submissionId)
+        if (!submission || (filters.track && submission.track !== filters.track) || (filters.format && submission.format !== filters.format) || (filters.room && session.room !== filters.room)) return []
+        const speakers = currentState.speakers.filter((speaker) => submission.speakerIds.includes(speaker.id) && speaker.status === 'confirmed').map((speaker) => ({ id: speaker.id, name: `${speaker.firstName} ${speaker.lastName}`, company: speaker.company, jobTitle: speaker.jobTitle }))
+        return [{ id: session.id, title: submission.title, description: submission.abstract, track: submission.track, format: submission.format, room: session.room, startAt: session.startAt, endAt: session.endAt, speakers }]
+      })
+      const etag = `"feed-${revision}-${format}-${JSON.stringify(filters)}"`
+      const headers = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=300, stale-while-revalidate=60', ETag: etag }
+      if (request.headers()['if-none-match'] === etag) return route.fulfill({ status: 304, headers })
+      const bodies = {
+        json: JSON.stringify({ event: { id: currentState.event.id, name: currentState.event.name, slug: currentState.event.slug }, revision, sessions }),
+        xml: `<?xml version="1.0" encoding="UTF-8"?><program>${sessions.map((session) => `<session><title>${session.title.replaceAll('&', '&amp;').replaceAll('<', '&lt;')}</title></session>`).join('')}</program>`,
+        ics: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:PUBLISH\r\n${sessions.map((session) => `BEGIN:VEVENT\r\nUID:${currentState.event.id}-${session.id}@openspeaker.local\r\nSUMMARY:${session.title}\r\nLOCATION:${session.room}\r\nEND:VEVENT\r\n`).join('')}END:VCALENDAR\r\n`,
+      }
+      const contentTypes = { json: 'application/json; charset=utf-8', xml: 'application/xml; charset=utf-8', ics: 'text/calendar; charset=utf-8' }
+      return route.fulfill({ status: 200, headers: { ...headers, 'Content-Type': contentTypes[format as keyof typeof contentTypes] }, body: method === 'HEAD' ? '' : bodies[format as keyof typeof bodies] })
+    }
+
+    if (/\/api\/public\/cfp\/[^/]+\/[^/]+\/claim$/.test(path)) {
+      if (method === 'POST') {
+        const input = request.postDataJSON() as Record<string, unknown>
+        claimRequests.push(input)
+        claimedEmail = String(input.email ?? '').toLowerCase()
+        return json(route, { data: { status: 'pending' } }, 202)
+      }
+      if (method === 'GET') {
+        const token = url.searchParams.get('token') ?? ''
+        claimVerifications.push(token)
+        if (token !== 'e2e-claim-token' || !claimedEmail) return error(route, 401, 'CFP_CLAIM_INVALID', 'This access link is invalid or expired.')
+        email = claimedEmail
+        claimedPortalOnly = true
+        return json(route, { data: { claimed: true, eventId: currentState.event.id } })
+      }
+    }
+
     if (/\/api\/public\/cfp\/[^/]+\/[^/]+$/.test(path)) {
       if (method === 'GET') {
         const cfpState = publicProjection(currentState)
@@ -109,7 +181,27 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
       if (method === 'POST') {
         const input = request.postDataJSON() as Record<string, unknown>
         cfpSubmissions.push(input)
-        return json(route, { data: { id: `submission-e2e-${cfpSubmissions.length}`, status: 'needs-review', submittedAt: new Date().toISOString() } }, 201)
+        const id = `submission-e2e-${cfpSubmissions.length}`
+        const submittedAt = new Date().toISOString()
+        const submittedEmail = String(input.speakerEmail ?? '').toLowerCase()
+        let submittedSpeaker = currentState.speakers.find((speaker) => speaker.email.toLowerCase() === submittedEmail)
+        if (!submittedSpeaker) {
+          const [firstName = 'Speaker', ...lastName] = String(input.speakerName ?? 'Speaker').trim().split(/\s+/)
+          submittedSpeaker = {
+            ...currentState.speakers[0], id: `speaker-${id}`, firstName, lastName: lastName.join(' '), email: submittedEmail,
+            company: String((input.speakerProfile as Record<string, unknown> | undefined)?.company ?? ''), jobTitle: String((input.speakerProfile as Record<string, unknown> | undefined)?.jobTitle ?? ''),
+            bio: String((input.speakerProfile as Record<string, unknown> | undefined)?.bio ?? ''), status: 'invited', updatedAt: submittedAt,
+          }
+          currentState = { ...currentState, speakers: [...currentState.speakers, submittedSpeaker] }
+        }
+        const proposal = {
+          ...currentState.submissions[0], id, title: String(input.title ?? ''), abstract: String(input.abstract ?? ''), track: String(input.track ?? 'General'),
+          format: String(input.format ?? 'Talk'), durationMinutes: Number(input.durationMinutes ?? 30), speakerIds: [submittedSpeaker.id], status: 'needs-review' as const,
+          origin: 'cfp' as const, customAnswers: (input.customAnswers ?? {}) as Record<string, string>, submittedAt, updatedAt: submittedAt,
+        }
+        currentState = { ...currentState, submissions: [...currentState.submissions, proposal] }
+        revision += 1
+        return json(route, { data: { id, status: 'needs-review', submittedAt } }, 201)
       }
     }
 
@@ -118,7 +210,41 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     }
 
     if (path.endsWith('/session') && method === 'GET') {
+      if (claimedPortalOnly) return error(route, 401, 'AUTH_REQUIRED', 'Workspace authentication is required.')
       return json(route, { data: { user: { id: `user-${role}`, email, name: role === 'reviewer' ? 'Sarah Lin' : role === 'speaker' ? 'Priya Rao' : 'Release Owner' }, role } })
+    }
+
+    if (/\/api\/workspaces\/[^/]+\/events$/.test(path) && method === 'GET') {
+      return json(route, { data: { events: [{ id: currentState.event.id, name: currentState.event.name, slug: currentState.event.slug, startAt: currentState.event.startAt, endAt: currentState.event.endAt, revision, createdAt: currentState.lastUpdatedAt, updatedAt: currentState.lastUpdatedAt }] } })
+    }
+
+    if (/\/api\/workspaces\/[^/]+\/crm\/integrations\/airtable$/.test(path) && method === 'GET') return json(route, { data: { configured: false } })
+
+    if (/\/api\/workspaces\/[^/]+\/crm\/actions\/add-to-event$/.test(path) && method === 'POST') {
+      const input = request.postDataJSON() as { contactId: string; eventId: string; expectedRevision: number }
+      if (input.expectedRevision !== crmRevision) return error(route, 409, 'REVISION_CONFLICT', 'CRM changed before this action.')
+      const contact = crm.contacts.find((item) => item.id === input.contactId)
+      if (!contact || input.eventId !== currentState.event.id) return error(route, 404, 'CRM_CONTACT_OR_EVENT_NOT_FOUND', 'Contact or event not found.')
+      const at = new Date().toISOString()
+      const existingSpeaker = currentState.speakers.find((speaker) => speaker.email.toLowerCase() === contact.email.toLowerCase())
+      const speakerId = existingSpeaker?.id ?? `speaker-${contact.id}`
+      if (!existingSpeaker) currentState = { ...currentState, speakers: [...currentState.speakers, { id: speakerId, firstName: contact.firstName, lastName: contact.lastName, email: contact.email, company: contact.company, jobTitle: contact.jobTitle, bio: contact.bio, status: 'invited', availability: [], createdAt: at, updatedAt: at }] }
+      crm = { ...crm, contacts: crm.contacts.map((item) => item.id === contact.id && !item.eventLinks.some((link) => link.eventId === input.eventId) ? { ...item, eventLinks: [...item.eventLinks, { eventId: input.eventId, eventName: currentState.event.name, speakerId, sessionTitles: [], linkedAt: at }], updatedAt: at } : item), updatedAt: at }
+      crmRevision += 1
+      crmWrites.push(clone(crm))
+      return json(route, { data: { crm, revision: crmRevision } })
+    }
+
+    if (/\/api\/workspaces\/[^/]+\/crm$/.test(path)) {
+      if (method === 'GET') return json(route, { data: { crm, revision: crmRevision } }, 200, { ETag: `"${crmRevision}"` })
+      if (method === 'PUT') {
+        const input = request.postDataJSON() as { expectedRevision: number; crm: CrmDocument }
+        if (input.expectedRevision !== crmRevision) return error(route, 409, 'REVISION_CONFLICT', 'CRM changed before this update.')
+        crm = clone(input.crm)
+        crmRevision += 1
+        crmWrites.push(clone(crm))
+        return json(route, { data: { crm, revision: crmRevision } }, 200, { ETag: `"${crmRevision}"` })
+      }
     }
 
     if (path.endsWith('/state')) {

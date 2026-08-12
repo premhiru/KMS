@@ -1,6 +1,6 @@
 # OpenSpeaker Worker schema
 
-The packaged migrations are `drizzle/0001_initial.sql`, `0002_integrations.sql`, `0003_operations.sql`, and `0004_automation_scopes.sql`. Runtime initialization executes one prepared statement per table/index and records each version in `schema_migrations`.
+The packaged migrations are `drizzle/0001_initial.sql`, `0002_integrations.sql`, `0003_operations.sql`, `0004_automation_scopes.sql`, `0005_cfp_claims.sql`, and `0006_crm.sql`. Runtime initialization executes one prepared statement per table/index and records each version in `schema_migrations`.
 
 `workspaces` and `memberships` are the tenant boundary. Production bootstrap and missing-owner repair are restricted to the exact configured owner email received through trusted Sites forwarding; forwarded IDs are persisted for attribution but are not compared with access-account IDs from another namespace. Every event, submission, asset, integration, automation, and audit query is workspace/event scoped.
 
@@ -11,3 +11,7 @@ The packaged migrations are `drizzle/0001_initial.sql`, `0002_integrations.sql`,
 `integration_runs` and `message_deliveries` provide durable provider history. `integration_leases` provides crash recovery and active-attempt exclusion. `integration_object_mappings` stores Accelevents local-to-remote speaker/session IDs.
 
 `automation_runs`, `automation_leases`, and `reminder_deliveries` provide tenant/event-scoped scheduled/manual reminder history with stale-run recovery; retention uses an explicit global scope. `rate_limit_buckets` supplies CFP throttling. `audit_log` records attributed mutations and automation outcomes.
+
+`cfp_claim_tokens` stores only a SHA-256 digest of each short-lived, single-use email-link token. `cfp_claim_sessions` stores only a digest of the opaque session cookie and scopes it to one workspace/event/speaker email. These sessions are consulted exclusively by that event's speaker-portal and proposal mutation handlers; they never grant workspace membership or access to general session, state, member, reviewer, audit, integration, or asset routes.
+
+`crm_documents` stores one optimistic, revisioned cross-event CRM document per workspace; `crm_history` keeps immutable write snapshots. `crm_integration_runs` durably records Airtable attempts and their idempotency keys, while `crm_airtable_mappings` retains workspace-scoped local-to-remote contact IDs for safe updates and crash reconciliation. Internal notes and activity remain only in D1 and are excluded from the outbound Airtable projection.

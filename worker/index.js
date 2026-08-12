@@ -28,9 +28,19 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_automation_leases_expiry ON automation_leases(lease_expires_at)`,
   `CREATE TABLE IF NOT EXISTS reminder_deliveries (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, schedule_id TEXT NOT NULL, task_id TEXT NOT NULL, speaker_id TEXT NOT NULL, recipient_email TEXT NOT NULL, idempotency_key TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('queued','sent','failed','skipped')), provider_message_id TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (workspace_id,event_id,idempotency_key))`,
   `CREATE INDEX IF NOT EXISTS idx_reminder_deliveries_event_created ON reminder_deliveries(workspace_id,event_id,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS cfp_claim_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, speaker_email TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, consumed_at TEXT, consume_nonce TEXT, requested_ip_hash TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_cfp_claim_tokens_event_email ON cfp_claim_tokens(workspace_id,event_id,speaker_email,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS cfp_claim_sessions (session_hash TEXT PRIMARY KEY, claim_id TEXT NOT NULL UNIQUE REFERENCES cfp_claim_tokens(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, speaker_email TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_cfp_claim_sessions_event_expiry ON cfp_claim_sessions(workspace_id,event_id,expires_at)`,
+  `CREATE TABLE IF NOT EXISTS crm_documents (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1 CHECK (revision>0), document_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS crm_history (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, revision INTEGER NOT NULL, document_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'write', PRIMARY KEY (workspace_id,revision))`,
+  `CREATE INDEX IF NOT EXISTS idx_crm_history_workspace_revision ON crm_history(workspace_id,revision DESC)`,
+  `CREATE TABLE IF NOT EXISTS crm_integration_runs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, provider TEXT NOT NULL CHECK (provider='airtable'), action TEXT NOT NULL, idempotency_key TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('running','succeeded','failed')), request_json TEXT NOT NULL DEFAULT '{}', response_json TEXT NOT NULL DEFAULT '{}', error_message TEXT, started_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, completed_at TEXT, UNIQUE (workspace_id,provider,idempotency_key))`,
+  `CREATE INDEX IF NOT EXISTS idx_crm_integration_runs_workspace_created ON crm_integration_runs(workspace_id,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS crm_airtable_mappings (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, contact_id TEXT NOT NULL, remote_record_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (workspace_id,contact_id), UNIQUE (workspace_id,remote_record_id))`,
 ]
 
-const MIGRATION_VERSIONS = ['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes']
+const MIGRATION_VERSIONS = ['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm']
 const BASE_MIGRATION_VERSIONS = MIGRATION_VERSIONS.slice(0, 3)
 
 const ROLE_LEVEL = { speaker: 1, reviewer: 2, organizer: 3, owner: 4 }
@@ -372,7 +382,7 @@ async function ensureSchema(env) {
         env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_scope_key ON automation_runs(scope_key,kind,idempotency_key)`),
         env.DB.prepare(`CREATE TABLE IF NOT EXISTS automation_leases (run_id TEXT PRIMARY KEY REFERENCES automation_runs(id) ON DELETE CASCADE, lease_token TEXT NOT NULL, lease_expires_at TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)`),
         env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_automation_leases_expiry ON automation_leases(lease_expires_at)`),
-        env.DB.prepare(`INSERT OR IGNORE INTO schema_migrations (version,applied_at) VALUES (?,?)`).bind(MIGRATION_VERSIONS.at(-1), timestamp),
+        ...MIGRATION_VERSIONS.slice(3).map((version) => env.DB.prepare(`INSERT OR IGNORE INTO schema_migrations (version,applied_at) VALUES (?,?)`).bind(version, timestamp)),
       ])
     })()
     schemaPromises.set(env.DB, promise)
@@ -479,6 +489,21 @@ async function authenticatedUser(request, env) {
   const timestamp = now()
   await env.DB.prepare(`INSERT INTO users (id,email,name,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET email=excluded.email,name=excluded.name,updated_at=excluded.updated_at`).bind(user.id, user.email, user.name, timestamp, timestamp).run()
   return user
+}
+
+async function speakerIdentityForEvent(request, env, workspaceId, eventId) {
+  try {
+    return { user: await authenticatedUser(request, env), claimed: false }
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.code !== 'AUTH_REQUIRED') throw error
+  }
+  const rawSession = cookieValue(request, 'openspeaker_cfp_claim')
+  if (!/^[A-Za-z0-9_-]{40,100}$/.test(rawSession)) throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event proposal claim is required.')
+  const sessionHash = await sha256(rawSession)
+  const session = await env.DB.prepare(`SELECT user_id,speaker_email,expires_at FROM cfp_claim_sessions WHERE session_hash=? AND workspace_id=? AND event_id=? AND expires_at>?`).bind(sessionHash, workspaceId, eventId, now()).first()
+  if (!session) throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event proposal claim is required.')
+  await env.DB.prepare(`UPDATE cfp_claim_sessions SET last_used_at=? WHERE session_hash=? AND workspace_id=? AND event_id=?`).bind(now(), sessionHash, workspaceId, eventId).run()
+  return { user: { id: session.user_id, email: session.speaker_email, name: '' }, claimed: true }
 }
 
 async function audit(env, workspaceId, userId, action, entityType, entityId, metadata, requestId) {
@@ -611,6 +636,119 @@ async function sendCfpConfirmation(env, event, input, submissionId) {
   }
 }
 
+function randomOpaqueToken(byteLength = 32) {
+  const bytes = new Uint8Array(byteLength)
+  crypto.getRandomValues(bytes)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function cookieValue(request, name) {
+  const header = request.headers.get('cookie') || ''
+  for (const part of header.split(';')) {
+    const [key, ...value] = part.trim().split('=')
+    if (key === name) return value.join('=')
+  }
+  return ''
+}
+
+function cfpClaimReturnUrl(request, value, token) {
+  if (typeof value !== 'string' || !value || value.length > 2_000) throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must be a same-origin URL.', { field: 'returnUrl' })
+  let returnUrl
+  try { returnUrl = new URL(value, new URL(request.url).origin) }
+  catch { throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must be a same-origin URL.', { field: 'returnUrl' }) }
+  if (returnUrl.origin !== new URL(request.url).origin) throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must use this application origin.', { field: 'returnUrl' })
+  returnUrl.username = ''
+  returnUrl.password = ''
+  returnUrl.searchParams.delete('claimToken')
+  returnUrl.searchParams.delete('cfpClaim')
+  returnUrl.searchParams.set('claimToken', token)
+  return returnUrl.toString()
+}
+
+async function enforceCfpClaimRateLimit(request, env, workspaceId, eventId, email) {
+  const seconds = Math.max(60, Number(env.CFP_CLAIM_RATE_WINDOW_SECONDS) || 900)
+  const limit = Math.max(1, Number(env.CFP_CLAIM_RATE_LIMIT) || 5)
+  const epoch = Math.floor(Date.now() / 1000)
+  const windowStart = Math.floor(epoch / seconds) * seconds
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown'
+  const bucketKey = await sha256(`cfp-claim:${workspaceId}:${eventId}:${ip}:${email}`)
+  const result = await env.DB.prepare(`INSERT INTO rate_limit_buckets (bucket_key,window_start,count) VALUES (?,?,1) ON CONFLICT(bucket_key,window_start) DO UPDATE SET count=count+1 RETURNING count`).bind(bucketKey, windowStart).first()
+  if (Number(result?.count) > limit) throw new ApiError(429, 'RATE_LIMITED', 'Too many access-link requests. Please try again later.', { retryAfterSeconds: Math.max(1, windowStart + seconds - epoch) }, { 'Retry-After': Math.max(1, windowStart + seconds - epoch) })
+  return sha256(`cfp-claim-ip:${workspaceId}:${eventId}:${ip}`)
+}
+
+async function publicCfpClaim(request, env, requestId, workspaceId, eventSlug) {
+  const url = new URL(request.url)
+  if (request.method === 'POST') {
+    const body = await jsonBody(request, 10_000)
+    if (!validEmail(body.email)) throw new ApiError(422, 'VALIDATION_ERROR', 'email must be valid.', { field: 'email' })
+    const email = body.email.trim().toLowerCase()
+    const event = await env.DB.prepare(`SELECT e.id,e.name,e.workspace_id,s.state_json FROM events e LEFT JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? AND e.slug=?`).bind(workspaceId, eventSlug).first()
+    const eventId = event?.id || `unknown-${eventSlug}`
+    const requestedIpHash = await enforceCfpClaimRateLimit(request, env, workspaceId, eventId, email)
+    // Validate the redirect for every caller so match/non-match behavior remains indistinguishable.
+    cfpClaimReturnUrl(request, body.returnUrl, 'validation-placeholder')
+    if (event) {
+      const publicMatch = await env.DB.prepare(`SELECT 1 AS matched FROM public_submissions WHERE workspace_id=? AND event_id=? AND lower(speaker_email)=? LIMIT 1`).bind(workspaceId, event.id, email).first()
+      const state = parseJsonColumn(event.state_json, {})
+      const stateMatch = (state.speakers || []).some((speaker) => typeof speaker?.email === 'string' && speaker.email.trim().toLowerCase() === email)
+      if (publicMatch || stateMatch) {
+        const rawToken = randomOpaqueToken()
+        const tokenHash = await sha256(rawToken)
+        const claimId = id('cfp-claim')
+        const createdAt = now()
+        const lifetimeSeconds = Math.min(3600, Math.max(300, Number(env.CFP_CLAIM_TOKEN_SECONDS) || 900))
+        const expiresAt = new Date(Date.parse(createdAt) + lifetimeSeconds * 1000).toISOString()
+        await env.DB.prepare(`INSERT INTO cfp_claim_tokens (id,workspace_id,event_id,speaker_email,token_hash,expires_at,requested_ip_hash,created_at) VALUES (?,?,?,?,?,?,?,?)`).bind(claimId, workspaceId, event.id, email, tokenHash, expiresAt, requestedIpHash, createdAt).run()
+        let delivery = 'skipped'
+        let providerMessage
+        if (env.RESEND_API_KEY && env.EMAIL_FROM) {
+          try {
+            const claimUrl = cfpClaimReturnUrl(request, body.returnUrl, rawToken)
+            const response = await fetchWithTimeout('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', 'Idempotency-Key': `cfp-claim-${claimId}` }, body: JSON.stringify({ from: env.EMAIL_FROM, to: [email], subject: `${event.name}: access your proposals`, text: `Use this one-time link within ${Math.round(lifetimeSeconds / 60)} minutes to access your proposals:\n\n${claimUrl}\n\nIf you did not request this link, you can ignore this email.` }) }, env)
+            const provider = await providerPayload(response)
+            delivery = response.ok ? 'sent' : 'failed'
+            providerMessage = response.ok ? provider.id : provider.message || `HTTP ${response.status}`
+          } catch (error) {
+            delivery = 'failed'
+            providerMessage = error instanceof Error ? error.message.slice(0, 500) : 'Provider request failed.'
+          }
+        }
+        await audit(env, workspaceId, null, `cfp.claim.${delivery}`, 'event', event.id, { claimId, providerMessage }, requestId)
+      }
+    }
+    return json({ data: { status: 'pending' } }, 202, request, env, requestId)
+  }
+  if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET, POST' })
+  const token = url.searchParams.get('token') || ''
+  if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new ApiError(401, 'CLAIM_INVALID_OR_EXPIRED', 'This access link is invalid, expired, or already used.')
+  const event = await env.DB.prepare(`SELECT id FROM events WHERE workspace_id=? AND slug=?`).bind(workspaceId, eventSlug).first()
+  if (!event) throw new ApiError(401, 'CLAIM_INVALID_OR_EXPIRED', 'This access link is invalid, expired, or already used.')
+  const tokenHash = await sha256(token)
+  const claim = await env.DB.prepare(`SELECT id,speaker_email,expires_at FROM cfp_claim_tokens WHERE workspace_id=? AND event_id=? AND token_hash=? AND consumed_at IS NULL AND expires_at>?`).bind(workspaceId, event.id, tokenHash, now()).first()
+  if (!claim) throw new ApiError(401, 'CLAIM_INVALID_OR_EXPIRED', 'This access link is invalid, expired, or already used.')
+  const consumedAt = now()
+  const consumeNonce = randomOpaqueToken(18)
+  const sessionToken = randomOpaqueToken()
+  const sessionHash = await sha256(sessionToken)
+  const userId = `cfp-claim-${sessionHash.slice(0, 32)}`
+  const sessionSeconds = Math.min(30 * 86400, Math.max(3600, Number(env.CFP_CLAIM_SESSION_SECONDS) || 7 * 86400))
+  const sessionExpiresAt = new Date(Date.parse(consumedAt) + sessionSeconds * 1000).toISOString()
+  const claimName = splitName(claim.speaker_email.split('@')[0].replace(/[._-]+/g, ' '))
+  const results = await env.DB.batch([
+    env.DB.prepare(`UPDATE cfp_claim_tokens SET consumed_at=?,consume_nonce=? WHERE id=? AND workspace_id=? AND event_id=? AND consumed_at IS NULL AND expires_at>?`).bind(consumedAt, consumeNonce, claim.id, workspaceId, event.id, consumedAt),
+    env.DB.prepare(`INSERT OR IGNORE INTO users (id,email,name,created_at,updated_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM cfp_claim_tokens WHERE id=? AND consume_nonce=?)`).bind(userId, claim.speaker_email, `${claimName.firstName} ${claimName.lastName}`.trim(), consumedAt, consumedAt, claim.id, consumeNonce),
+    env.DB.prepare(`INSERT INTO cfp_claim_sessions (session_hash,claim_id,workspace_id,event_id,user_id,speaker_email,expires_at,created_at,last_used_at) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM cfp_claim_tokens WHERE id=? AND consume_nonce=?)`).bind(sessionHash, claim.id, workspaceId, event.id, userId, claim.speaker_email, sessionExpiresAt, consumedAt, consumedAt, claim.id, consumeNonce),
+  ])
+  if (Number(results[0]?.meta?.changes || 0) !== 1 || Number(results[2]?.meta?.changes || 0) !== 1) throw new ApiError(401, 'CLAIM_INVALID_OR_EXPIRED', 'This access link is invalid, expired, or already used.')
+  const cookiePath = `/api/workspaces/${encodeURIComponent(workspaceId)}/events/${encodeURIComponent(event.id)}/speaker-portal`
+  const cookie = `openspeaker_cfp_claim=${sessionToken}; Path=${cookiePath}; Max-Age=${sessionSeconds}; Secure; HttpOnly; SameSite=Lax`
+  await audit(env, workspaceId, null, 'cfp.claim.redeemed', 'event', event.id, { claimId: claim.id, expiresAt: sessionExpiresAt }, requestId)
+  return json({ data: { claimed: true, eventId: event.id } }, 200, request, env, requestId, { 'Set-Cookie': cookie })
+}
+
 async function publicCfp(request, env, requestId, workspaceId, eventSlug) {
   const event = await env.DB.prepare(`SELECT e.id,e.name,e.slug,e.cfp_config,s.revision,s.state_json FROM events e LEFT JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? AND e.slug=? AND e.cfp_open=1`).bind(workspaceId, eventSlug).first()
   if (!event) throw new ApiError(404, 'CFP_NOT_FOUND', 'This call for proposals is unavailable or closed.')
@@ -687,6 +825,129 @@ async function publicEventState(request, env, requestId, workspaceId, eventSlug)
   const row = await env.DB.prepare(`SELECT e.id,e.name,e.slug,s.revision,s.state_json,s.updated_at FROM events e JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? AND e.slug=?`).bind(workspaceId, eventSlug).first()
   if (!row) throw new ApiError(404, 'PUBLIC_EVENT_NOT_FOUND', 'Published event state was not found.')
   return json({ data: { event: { id: row.id, name: row.name, slug: row.slug }, revision: row.revision, state: sanitizePublicState(parseJsonColumn(row.state_json, {}), workspaceId, eventSlug), updatedAt: row.updated_at } }, 200, request, env, requestId, { ETag: `"${row.revision}"` })
+}
+
+function xmlEscape(value) {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+}
+
+function foldCalendarLine(line) {
+  const bytes = new TextEncoder().encode(line)
+  if (bytes.length <= 75) return line
+  const chunks = []
+  let current = ''
+  let size = 0
+  for (const character of line) {
+    const characterSize = new TextEncoder().encode(character).length
+    if (size + characterSize > 74 && current) {
+      chunks.push(current)
+      current = ` ${character}`
+      size = 1 + characterSize
+    } else {
+      current += character
+      size += characterSize
+    }
+  }
+  if (current) chunks.push(current)
+  return chunks.join('\r\n')
+}
+
+function publicProgramModel(state, revision, updatedAt, filters = {}) {
+  const speakers = new Map((state.speakers || []).map((speaker) => [speaker.id, {
+    id: speaker.id,
+    name: `${speaker.firstName || ''} ${speaker.lastName || ''}`.trim(),
+    firstName: speaker.firstName || '',
+    lastName: speaker.lastName || '',
+    jobTitle: speaker.jobTitle || '',
+    company: speaker.company || '',
+    bio: speaker.bio || '',
+    pronouns: speaker.pronouns || '',
+    photoUrl: speaker.photoUrl || '',
+  }]))
+  const submissions = new Map((state.submissions || []).map((submission) => [submission.id, submission]))
+  const sessions = (state.sessions || []).flatMap((session) => {
+    const submission = submissions.get(session.submissionId)
+    if (!submission) return []
+    if (filters.track && submission.track !== filters.track) return []
+    if (filters.format && submission.format !== filters.format) return []
+    if (filters.room && session.room !== filters.room) return []
+    return [{
+      id: session.id,
+      title: submission.title,
+      description: submission.abstract,
+      track: submission.track,
+      format: submission.format,
+      room: session.room,
+      startAt: session.startAt,
+      endAt: session.endAt,
+      updatedAt: session.updatedAt,
+      speakers: (submission.speakerIds || []).map((speakerId) => speakers.get(speakerId)).filter(Boolean),
+    }]
+  }).sort((left, right) => left.startAt.localeCompare(right.startAt) || left.title.localeCompare(right.title))
+  const visibleSpeakerIds = new Set(sessions.flatMap((session) => session.speakers.map((speaker) => speaker.id)))
+  return {
+    version: 'https://openspeaker.app/schemas/public-program/v1',
+    revision,
+    updatedAt,
+    event: {
+      id: state.event?.id,
+      name: state.event?.name,
+      slug: state.event?.slug,
+      description: state.event?.description || '',
+      venue: state.event?.venue || '',
+      timezone: state.event?.timezone || 'UTC',
+      startAt: state.event?.startAt,
+      endAt: state.event?.endAt,
+    },
+    sessions,
+    speakers: [...speakers.values()].filter((speaker) => visibleSpeakerIds.has(speaker.id)).sort((left, right) => left.lastName.localeCompare(right.lastName) || left.firstName.localeCompare(right.firstName)),
+  }
+}
+
+function publicProgramXml(model) {
+  const sessions = model.sessions.map((session) => `<session id="${xmlEscape(session.id)}"><title>${xmlEscape(session.title)}</title><description>${xmlEscape(session.description)}</description><startAt>${xmlEscape(session.startAt)}</startAt><endAt>${xmlEscape(session.endAt)}</endAt><room>${xmlEscape(session.room)}</room><track>${xmlEscape(session.track)}</track><format>${xmlEscape(session.format)}</format><speakers>${session.speakers.map((speaker) => `<speaker id="${xmlEscape(speaker.id)}"><name>${xmlEscape(speaker.name)}</name><jobTitle>${xmlEscape(speaker.jobTitle)}</jobTitle><company>${xmlEscape(speaker.company)}</company><bio>${xmlEscape(speaker.bio)}</bio><photoUrl>${xmlEscape(speaker.photoUrl)}</photoUrl></speaker>`).join('')}</speakers></session>`).join('')
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<program version="1" revision="${xmlEscape(model.revision)}"><event id="${xmlEscape(model.event.id)}"><name>${xmlEscape(model.event.name)}</name><description>${xmlEscape(model.event.description)}</description><venue>${xmlEscape(model.event.venue)}</venue><timezone>${xmlEscape(model.event.timezone)}</timezone><startAt>${xmlEscape(model.event.startAt)}</startAt><endAt>${xmlEscape(model.event.endAt)}</endAt></event><updatedAt>${xmlEscape(model.updatedAt)}</updatedAt><sessions>${sessions}</sessions></program>\n`
+}
+
+function publicProgramIcs(model) {
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//OpenSpeaker//Public Program//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${calendarEscape(model.event.name)}`]
+  for (const session of model.sessions) {
+    const sequence = Math.max(0, Math.floor((Date.parse(session.updatedAt) || 0) / 1000))
+    lines.push('BEGIN:VEVENT', `UID:${calendarEscape(`${model.event.id}-${session.id}@openspeaker.local`)}`, `DTSTAMP:${calendarDate(model.updatedAt)}`, `SEQUENCE:${sequence}`, 'STATUS:CONFIRMED', `DTSTART:${calendarDate(session.startAt)}`, `DTEND:${calendarDate(session.endAt)}`, `SUMMARY:${calendarEscape(session.title)}`, `DESCRIPTION:${calendarEscape([session.description, session.speakers.length ? `Speakers: ${session.speakers.map((speaker) => speaker.name).join(', ')}` : ''].filter(Boolean).join('\n\n'))}`, `LOCATION:${calendarEscape([session.room, model.event.venue].filter(Boolean).join(', '))}`, `CATEGORIES:${calendarEscape([session.track, session.format].filter(Boolean).join(','))}`, 'END:VEVENT')
+  }
+  lines.push('END:VCALENDAR', '')
+  return lines.map(foldCalendarLine).join('\r\n')
+}
+
+async function publicProgramFeed(request, env, requestId, workspaceId, eventSlug, format) {
+  if (!['GET', 'HEAD'].includes(request.method)) throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET, HEAD' })
+  const row = await env.DB.prepare(`SELECT e.id,e.name,e.slug,s.revision,s.state_json,s.updated_at FROM events e JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? AND e.slug=?`).bind(workspaceId, eventSlug).first()
+  if (!row) throw new ApiError(404, 'PUBLIC_EVENT_NOT_FOUND', 'Published event state was not found.')
+  const publicState = sanitizePublicState(parseJsonColumn(row.state_json, {}), workspaceId, eventSlug)
+  const url = new URL(request.url)
+  const filters = { track: url.searchParams.get('track') || '', format: url.searchParams.get('format') || '', room: url.searchParams.get('room') || '' }
+  const model = publicProgramModel(publicState, Number(row.revision), row.updated_at, filters)
+  const etag = `W/"program-${row.revision}-${await durableKey(JSON.stringify(filters))}"`
+  const headers = responseHeaders(request, env, requestId)
+  headers.set('Access-Control-Allow-Origin', '*')
+  headers.delete('Access-Control-Allow-Credentials')
+  headers.delete('Vary')
+  headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600')
+  headers.set('ETag', etag)
+  headers.set('Content-Disposition', `inline; filename="${eventSlug}-program.${format}"`)
+  if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers })
+  let content
+  if (format === 'json') {
+    headers.set('Content-Type', 'application/json; charset=utf-8')
+    content = JSON.stringify(model, null, 2)
+  } else if (format === 'xml') {
+    headers.set('Content-Type', 'application/xml; charset=utf-8')
+    content = publicProgramXml(model)
+  } else {
+    headers.set('Content-Type', 'text/calendar; charset=utf-8')
+    content = publicProgramIcs(model)
+  }
+  return new Response(request.method === 'HEAD' ? null : content, { status: 200, headers })
 }
 
 async function workspaceEvents(request, env, requestId, workspaceId) {
@@ -1411,12 +1672,12 @@ function projectSpeakerPortal(state, speaker, assetsForUser, workspaceId, eventI
 }
 
 async function speakerPortal(request, env, requestId, workspaceId, eventId) {
-  const user = await authenticatedUser(request, env)
+  const access = await speakerIdentityForEvent(request, env, workspaceId, eventId)
+  const user = access.user
   const loaded = await loadedEventState(env, workspaceId, eventId)
   const speaker = ownSpeaker(loaded.state, user)
   if (!speaker) throw new ApiError(404, 'SPEAKER_PROFILE_NOT_LINKED', 'No speaker profile in this event matches your authenticated email.')
-  await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'speaker',? WHERE EXISTS (SELECT 1 FROM workspaces WHERE id=?)`).bind(workspaceId, user.id, now(), workspaceId).run()
-  const access = { user }
+  if (!access.claimed) await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'speaker',? WHERE EXISTS (SELECT 1 FROM workspaces WHERE id=?)`).bind(workspaceId, user.id, now(), workspaceId).run()
   const assetRows = await env.DB.prepare(`SELECT id,file_name,content_type,size_bytes,created_at FROM assets WHERE workspace_id=? AND event_id=? AND uploaded_by=? ORDER BY created_at DESC`).bind(workspaceId, eventId, access.user.id).all()
   const assetProjection = (assetRows.results || []).map((asset) => ({ ...asset, downloadUrl: `/api/workspaces/${encodeURIComponent(workspaceId)}/events/${encodeURIComponent(eventId)}/assets/${encodeURIComponent(asset.id)}` }))
   if (request.method === 'GET') return json({ data: { revision: loaded.row.revision, portal: projectSpeakerPortal(loaded.state, speaker, assetProjection, workspaceId, eventId) } }, 200, request, env, requestId, { ETag: `"${loaded.row.revision}"` })
@@ -1510,11 +1771,12 @@ function speakerProposalFields(body, existing, state, submit) {
 }
 
 async function speakerProposalMutation(request, env, requestId, workspaceId, eventId, submissionId) {
-  const user = await authenticatedUser(request, env)
+  const access = await speakerIdentityForEvent(request, env, workspaceId, eventId)
+  const user = access.user
   const loaded = await loadedEventState(env, workspaceId, eventId)
   const speaker = ownSpeaker(loaded.state, user)
   if (!speaker) throw new ApiError(404, 'SPEAKER_PROFILE_NOT_LINKED', 'No speaker profile in this event matches your authenticated email.')
-  await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'speaker',? WHERE EXISTS (SELECT 1 FROM workspaces WHERE id=?)`).bind(workspaceId, user.id, now(), workspaceId).run()
+  if (!access.claimed) await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'speaker',? WHERE EXISTS (SELECT 1 FROM workspaces WHERE id=?)`).bind(workspaceId, user.id, now(), workspaceId).run()
   if (!['POST', 'PATCH'].includes(request.method)) throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST, PATCH' })
   const body = await jsonBody(request, 100_000)
   if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision !== loaded.row.revision) throw new ApiError(409, 'REVISION_CONFLICT', 'Proposal data has changed since it was loaded.', { expectedRevision: body.expectedRevision, currentRevision: loaded.row.revision })
@@ -1786,6 +2048,333 @@ async function internalMaintenance(request, env, requestId) {
   return json({ data: result }, status, request, env, requestId)
 }
 
+const CRM_LIMITS = { bytes: 2_000_000, contacts: 20_000, segments: 1_000, stages: 100, pipeline: 20_000, campaigns: 5_000 }
+
+function emptyCrmDocument(timestamp) {
+  return {
+    contacts: [], segments: [],
+    stages: [
+      { id: 'crm-stage-open', name: 'Open', kind: 'open', order: 0 },
+      { id: 'crm-stage-won', name: 'Won', kind: 'won', order: 1 },
+      { id: 'crm-stage-nurture', name: 'Nurture', kind: 'nurture', order: 2 },
+      { id: 'crm-stage-lost', name: 'Lost', kind: 'lost', order: 3 },
+    ],
+    pipeline: [], campaigns: [], updatedAt: timestamp,
+  }
+}
+
+function crmRequiredString(value, path, max = 2_000, allowEmpty = false) {
+  if (typeof value !== 'string' || value.length > max || (!allowEmpty && !value.trim())) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} must be ${allowEmpty ? 'a' : 'a non-empty'} string of at most ${max} characters.`, { field: path })
+  return value
+}
+
+function crmStringArray(value, path, maxItems = 500, maxLength = 300) {
+  if (!Array.isArray(value) || value.length > maxItems || !value.every((item) => typeof item === 'string' && item.length <= maxLength)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} must be an array of at most ${maxItems} strings.`, { field: path })
+}
+
+function validateCrmNote(note, path) {
+  if (!isRecord(note) || !validId(note.id)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.id is invalid.`, { field: `${path}.id` })
+  crmRequiredString(note.body, `${path}.body`, 5_000)
+  crmRequiredString(note.authorName, `${path}.authorName`, 160)
+  if (!validIsoDate(note.createdAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.createdAt must be an ISO date-time.`, { field: `${path}.createdAt` })
+}
+
+export function validateCrmDocument(crm) {
+  if (!isRecord(crm)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', 'crm must be an object.')
+  const encoded = new TextEncoder().encode(JSON.stringify(crm)).byteLength
+  if (encoded > CRM_LIMITS.bytes) throw new ApiError(413, 'CRM_DOCUMENT_TOO_LARGE', `CRM document exceeds ${CRM_LIMITS.bytes} bytes.`)
+  for (const [field, limit] of Object.entries({ contacts: CRM_LIMITS.contacts, segments: CRM_LIMITS.segments, stages: CRM_LIMITS.stages, pipeline: CRM_LIMITS.pipeline, campaigns: CRM_LIMITS.campaigns })) {
+    if (!Array.isArray(crm[field]) || crm[field].length > limit) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${field} must be an array of at most ${limit} records.`, { field })
+  }
+  if (!validIsoDate(crm.updatedAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', 'updatedAt must be an ISO date-time.', { field: 'updatedAt' })
+  const contactIds = new Set()
+  const emails = new Set()
+  crm.contacts.forEach((contact, index) => {
+    const path = `contacts.${index}`
+    if (!isRecord(contact) || !validId(contact.id) || contactIds.has(contact.id)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.id is invalid or duplicated.`, { field: `${path}.id` })
+    contactIds.add(contact.id)
+    for (const field of ['firstName', 'lastName', 'company', 'jobTitle', 'bio']) crmRequiredString(contact[field], `${path}.${field}`, field === 'bio' ? 10_000 : 300, true)
+    if (!validEmail(contact.email)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.email is invalid.`, { field: `${path}.email` })
+    const email = contact.email.trim().toLowerCase()
+    if (emails.has(email)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', 'Contact emails must be unique.', { field: `${path}.email` })
+    emails.add(email)
+    for (const field of ['photoUrl', 'linkedinUrl', 'twitterUrl']) if (contact[field] !== undefined && (typeof contact[field] !== 'string' || contact[field].length > 2_000 || (contact[field] && !/^https:\/\//i.test(contact[field])))) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.${field} must be an HTTPS URL.`, { field: `${path}.${field}` })
+    if (contact.travelPreferences !== undefined) crmRequiredString(contact.travelPreferences, `${path}.travelPreferences`, 5_000, true)
+    crmStringArray(contact.tags, `${path}.tags`, 100, 100)
+    if (!isRecord(contact.customFields) || Object.keys(contact.customFields).length > 100 || !Object.entries(contact.customFields).every(([key, value]) => key.length <= 100 && typeof value === 'string' && value.length <= 2_000)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.customFields is invalid.`, { field: `${path}.customFields` })
+    if (!Array.isArray(contact.notes) || contact.notes.length > 2_000) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.notes is invalid.`, { field: `${path}.notes` })
+    contact.notes.forEach((note, noteIndex) => validateCrmNote(note, `${path}.notes.${noteIndex}`))
+    if (!Array.isArray(contact.activity) || contact.activity.length > 5_000) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.activity is invalid.`, { field: `${path}.activity` })
+    contact.activity.forEach((activity, activityIndex) => {
+      const activityPath = `${path}.activity.${activityIndex}`
+      if (!isRecord(activity) || !validId(activity.id) || !['created', 'updated', 'note', 'stage', 'event', 'campaign', 'merge'].includes(activity.type)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${activityPath} is invalid.`, { field: activityPath })
+      crmRequiredString(activity.summary, `${activityPath}.summary`, 1_000)
+      if (!validIsoDate(activity.createdAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${activityPath}.createdAt is invalid.`, { field: `${activityPath}.createdAt` })
+    })
+    if (!Array.isArray(contact.eventLinks) || contact.eventLinks.length > 1_000) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.eventLinks is invalid.`, { field: `${path}.eventLinks` })
+    contact.eventLinks.forEach((link, linkIndex) => {
+      const linkPath = `${path}.eventLinks.${linkIndex}`
+      if (!isRecord(link) || !validId(link.eventId) || !validId(link.speakerId)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${linkPath} is invalid.`, { field: linkPath })
+      crmRequiredString(link.eventName, `${linkPath}.eventName`, 300)
+      crmStringArray(link.sessionTitles, `${linkPath}.sessionTitles`, 500, 300)
+      if (!validIsoDate(link.linkedAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${linkPath}.linkedAt is invalid.`, { field: `${linkPath}.linkedAt` })
+    })
+    if (!validIsoDate(contact.createdAt) || !validIsoDate(contact.updatedAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} timestamps are invalid.`, { field: path })
+  })
+  const stageIds = new Set()
+  crm.stages.forEach((stage, index) => {
+    if (!isRecord(stage) || !validId(stage.id) || stageIds.has(stage.id) || !['open', 'won', 'nurture', 'lost'].includes(stage.kind) || !Number.isSafeInteger(stage.order)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `stages.${index} is invalid.`, { field: `stages.${index}` })
+    stageIds.add(stage.id); crmRequiredString(stage.name, `stages.${index}.name`, 160)
+  })
+  const segmentIds = new Set()
+  crm.segments.forEach((segment, index) => {
+    const path = `segments.${index}`
+    if (!isRecord(segment) || !validId(segment.id) || segmentIds.has(segment.id) || !['dynamic', 'curated'].includes(segment.kind)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} is invalid.`, { field: path })
+    segmentIds.add(segment.id); crmRequiredString(segment.name, `${path}.name`, 160); crmStringArray(segment.contactIds, `${path}.contactIds`, CRM_LIMITS.contacts, 128)
+    if (!segment.contactIds.every((contactId) => contactIds.has(contactId)) || !isRecord(segment.filters)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} contains an invalid contact or filters.`, { field: path })
+  })
+  crm.pipeline.forEach((card, index) => {
+    const path = `pipeline.${index}`
+    if (!isRecord(card) || !validId(card.id) || !contactIds.has(card.contactId) || !stageIds.has(card.stageId) || !Array.isArray(card.notes) || !Array.isArray(card.stageHistory)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} is invalid.`, { field: path })
+    card.notes.forEach((note, noteIndex) => validateCrmNote(note, `${path}.notes.${noteIndex}`))
+    if (!validIsoDate(card.createdAt) || !validIsoDate(card.updatedAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} timestamps are invalid.`, { field: path })
+  })
+  crm.campaigns.forEach((campaign, index) => {
+    const path = `campaigns.${index}`
+    if (!isRecord(campaign) || !validId(campaign.id) || !['queued', 'sent', 'failed'].includes(campaign.status)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path} is invalid.`, { field: path })
+    crmStringArray(campaign.contactIds, `${path}.contactIds`, CRM_LIMITS.contacts, 128)
+    if (!campaign.contactIds.every((contactId) => contactIds.has(contactId))) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.contactIds contains an unknown contact.`, { field: `${path}.contactIds` })
+    for (const field of ['subject', 'body', 'preview']) crmRequiredString(campaign[field], `${path}.${field}`, field === 'subject' ? 300 : 20_000, true)
+    if (!validIsoDate(campaign.createdAt)) throw new ApiError(422, 'INVALID_CRM_DOCUMENT', `${path}.createdAt is invalid.`, { field: `${path}.createdAt` })
+  })
+  return crm
+}
+
+function crmSpeakerSessions(state, speakerId) {
+  const submissionIds = new Set((state.submissions || []).filter((submission) => submission?.speakerIds?.includes(speakerId)).map((submission) => submission.id))
+  const titles = new Map((state.submissions || []).map((submission) => [submission.id, submission.title]))
+  return [...new Set((state.sessions || []).filter((session) => submissionIds.has(session?.submissionId)).map((session) => titles.get(session.submissionId)).filter(Boolean))]
+}
+
+async function bootstrapCrmDocument(env, workspaceId, timestamp) {
+  const crm = emptyCrmDocument(timestamp)
+  const byEmail = new Map()
+  const eventRows = await env.DB.prepare(`SELECT e.id,e.name,s.state_json FROM events e JOIN event_states s ON s.event_id=e.id WHERE e.workspace_id=? ORDER BY e.created_at,e.id`).bind(workspaceId).all()
+  for (const event of eventRows.results || []) {
+    const state = parseJsonColumn(event.state_json, {})
+    for (const speaker of state.speakers || []) {
+      if (!validEmail(speaker?.email)) continue
+      const email = speaker.email.trim().toLowerCase()
+      let contact = byEmail.get(email)
+      if (!contact) {
+        const digest = await sha256(email)
+        contact = {
+          id: `crm-contact-${digest.slice(0, 24)}`, firstName: String(speaker.firstName || '').slice(0, 300), lastName: String(speaker.lastName || '').slice(0, 300), email,
+          company: String(speaker.company || '').slice(0, 300), jobTitle: String(speaker.jobTitle || '').slice(0, 300), bio: String(speaker.bio || '').slice(0, 10_000),
+          ...(speaker.photoUrl ? { photoUrl: speaker.photoUrl } : {}), ...(speaker.linkedinUrl ? { linkedinUrl: speaker.linkedinUrl } : {}), ...(speaker.twitterUrl ? { twitterUrl: speaker.twitterUrl } : {}), ...(speaker.travelPreferences ? { travelPreferences: speaker.travelPreferences } : {}),
+          tags: [], customFields: {}, notes: [], activity: [{ id: `crm-created-${digest.slice(0, 24)}`, type: 'created', summary: 'Imported from event speaker records.', createdAt: timestamp }], eventLinks: [], createdAt: timestamp, updatedAt: timestamp,
+        }
+        byEmail.set(email, contact); crm.contacts.push(contact)
+      }
+      if (!contact.eventLinks.some((link) => link.eventId === event.id && link.speakerId === speaker.id)) contact.eventLinks.push({ eventId: event.id, eventName: event.name, speakerId: speaker.id, sessionTitles: crmSpeakerSessions(state, speaker.id), linkedAt: timestamp })
+    }
+  }
+  return validateCrmDocument(crm)
+}
+
+async function loadCrmDocument(env, workspaceId, userId, timestamp = now()) {
+  let row = await env.DB.prepare(`SELECT revision,document_json,updated_at FROM crm_documents WHERE workspace_id=?`).bind(workspaceId).first()
+  if (row) return { crm: validateCrmDocument(parseJsonColumn(row.document_json, null)), revision: row.revision, updatedAt: row.updated_at }
+  const crm = await bootstrapCrmDocument(env, workspaceId, timestamp)
+  await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO crm_documents (workspace_id,revision,document_json,updated_by,updated_at) VALUES (?,1,?,?,?)`).bind(workspaceId, JSON.stringify(crm), userId, timestamp),
+    env.DB.prepare(`INSERT OR IGNORE INTO crm_history (workspace_id,revision,document_json,updated_by,created_at,reason) VALUES (?,1,?,?,?,'bootstrap')`).bind(workspaceId, JSON.stringify(crm), userId, timestamp),
+  ])
+  row = await env.DB.prepare(`SELECT revision,document_json,updated_at FROM crm_documents WHERE workspace_id=?`).bind(workspaceId).first()
+  return { crm: validateCrmDocument(parseJsonColumn(row.document_json, null)), revision: row.revision, updatedAt: row.updated_at }
+}
+
+function assertedCrmRevision(request, body, currentRevision) {
+  if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1) throw new ApiError(422, 'VALIDATION_ERROR', 'expectedRevision must be a positive integer.', { field: 'expectedRevision' })
+  const ifMatch = request.headers.get('if-match')
+  if (ifMatch && Number(ifMatch.replace(/^W\//, '').replaceAll('"', '')) !== body.expectedRevision) throw new ApiError(400, 'REVISION_HEADER_MISMATCH', 'If-Match must equal expectedRevision.')
+  if (body.expectedRevision !== currentRevision) throw new ApiError(409, 'REVISION_CONFLICT', 'CRM data has changed since it was loaded.', { expectedRevision: body.expectedRevision, currentRevision })
+}
+
+async function persistCrmDocument(env, { workspaceId, crm, expectedRevision, userId, timestamp, reason }) {
+  const nextRevision = expectedRevision + 1
+  const serialized = JSON.stringify(crm)
+  const results = await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO crm_history (workspace_id,revision,document_json,updated_by,created_at,reason) SELECT workspace_id,revision,document_json,updated_by,updated_at,'pre-write snapshot' FROM crm_documents WHERE workspace_id=? AND revision=?`).bind(workspaceId, expectedRevision),
+    env.DB.prepare(`UPDATE crm_documents SET revision=revision+1,document_json=?,updated_by=?,updated_at=? WHERE workspace_id=? AND revision=? RETURNING revision`).bind(serialized, userId, timestamp, workspaceId, expectedRevision),
+    env.DB.prepare(`INSERT OR IGNORE INTO crm_history (workspace_id,revision,document_json,updated_by,created_at,reason) SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM crm_documents WHERE workspace_id=? AND revision=? AND updated_by=? AND updated_at=?)`).bind(workspaceId, nextRevision, serialized, userId, timestamp, reason, workspaceId, nextRevision, userId, timestamp),
+  ])
+  return results[1]?.results?.[0] || null
+}
+
+async function crmDocumentRoute(request, env, requestId, workspaceId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  const loaded = await loadCrmDocument(env, workspaceId, access.user.id)
+  if (request.method === 'GET') return json({ data: { crm: loaded.crm, revision: loaded.revision } }, 200, request, env, requestId, { ETag: `"${loaded.revision}"`, 'Cache-Control': 'private, no-store' })
+  if (request.method !== 'PUT') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET, PUT' })
+  const body = await jsonBody(request, CRM_LIMITS.bytes + 50_000)
+  assertedCrmRevision(request, body, loaded.revision)
+  const timestamp = now()
+  const crm = validateCrmDocument({ ...body.crm, updatedAt: timestamp })
+  const updated = await persistCrmDocument(env, { workspaceId, crm, expectedRevision: loaded.revision, userId: access.user.id, timestamp, reason: 'crm document write' })
+  if (!updated) throw new ApiError(409, 'REVISION_CONFLICT', 'CRM data changed before the write completed.', { expectedRevision: loaded.revision })
+  await audit(env, workspaceId, access.user.id, 'crm.updated', 'crm', workspaceId, { revision: updated.revision, contacts: crm.contacts.length }, requestId)
+  return json({ data: { crm, revision: updated.revision } }, 200, request, env, requestId, { ETag: `"${updated.revision}"`, 'Cache-Control': 'private, no-store' })
+}
+
+async function crmAddToEvent(request, env, requestId, workspaceId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
+  const body = await jsonBody(request, 50_000)
+  if (!validId(body.contactId) || !validId(body.eventId)) throw new ApiError(422, 'VALIDATION_ERROR', 'contactId and eventId are required.', { fields: ['contactId', 'eventId'] })
+  const loadedCrm = await loadCrmDocument(env, workspaceId, access.user.id)
+  assertedCrmRevision(request, body, loadedCrm.revision)
+  const contact = loadedCrm.crm.contacts.find((item) => item.id === body.contactId)
+  if (!contact) throw new ApiError(404, 'CRM_CONTACT_NOT_FOUND', 'CRM contact was not found.')
+  const loadedEvent = await loadedEventState(env, workspaceId, body.eventId)
+  const timestamp = now()
+  let speaker = (loadedEvent.state.speakers || []).find((item) => item.email?.trim().toLowerCase() === contact.email.trim().toLowerCase())
+  const alreadyLinked = contact.eventLinks.some((link) => link.eventId === body.eventId && (!speaker || link.speakerId === speaker.id))
+  if (speaker && alreadyLinked) return json({ data: { crm: loadedCrm.crm, revision: loadedCrm.revision, eventRevision: loadedEvent.row.revision, idempotent: true } }, 200, request, env, requestId, { ETag: `"${loadedCrm.revision}"` })
+  if (!speaker) {
+    speaker = { id: `speaker-crm-${(await sha256(contact.id)).slice(0, 20)}`, firstName: contact.firstName, lastName: contact.lastName, email: contact.email, company: contact.company, jobTitle: contact.jobTitle, bio: contact.bio, ...(contact.photoUrl ? { photoUrl: contact.photoUrl } : {}), ...(contact.linkedinUrl ? { linkedinUrl: contact.linkedinUrl } : {}), ...(contact.twitterUrl ? { twitterUrl: contact.twitterUrl } : {}), ...(contact.travelPreferences ? { travelPreferences: contact.travelPreferences } : {}), status: 'invited', availability: [], createdAt: timestamp, updatedAt: timestamp }
+  }
+  const eventState = { ...loadedEvent.state, lastUpdatedAt: timestamp, speakers: (loadedEvent.state.speakers || []).some((item) => item.id === speaker.id) ? loadedEvent.state.speakers : [...(loadedEvent.state.speakers || []), speaker] }
+  validateAppStateDocument(eventState, body.eventId)
+  const eventUpdated = await persistStateRevision(env, { workspaceId, eventId: body.eventId, state: eventState, expectedRevision: loadedEvent.row.revision, userId: access.user.id, timestamp, reason: `CRM add-to-event:${contact.id}` })
+  if (!eventUpdated) throw new ApiError(409, 'REVISION_CONFLICT', 'The target event changed before the speaker could be added.', { currentRevision: loadedEvent.row.revision })
+  const eventName = loadedEvent.row.name || eventState.event.name
+  const crm = structuredClone(loadedCrm.crm)
+  const mutable = crm.contacts.find((item) => item.id === contact.id)
+  mutable.eventLinks = mutable.eventLinks.filter((link) => link.eventId !== body.eventId)
+  mutable.eventLinks.push({ eventId: body.eventId, eventName, speakerId: speaker.id, sessionTitles: crmSpeakerSessions(eventState, speaker.id), linkedAt: timestamp })
+  mutable.activity.push({ id: id('crm-activity'), type: 'event', summary: `Added to ${eventName}.`, createdAt: timestamp })
+  mutable.updatedAt = timestamp; crm.updatedAt = timestamp
+  validateCrmDocument(crm)
+  const crmUpdated = await persistCrmDocument(env, { workspaceId, crm, expectedRevision: loadedCrm.revision, userId: access.user.id, timestamp, reason: `add-to-event:${body.eventId}:${contact.id}` })
+  if (!crmUpdated) throw new ApiError(409, 'REVISION_CONFLICT', 'CRM data changed while linking the event. The speaker was added and the idempotent action may be retried.', { expectedRevision: loadedCrm.revision, eventRevision: eventUpdated.revision })
+  await audit(env, workspaceId, access.user.id, 'crm.contact.added_to_event', 'crm_contact', contact.id, { eventId: body.eventId, speakerId: speaker.id, revision: crmUpdated.revision }, requestId)
+  return json({ data: { crm, revision: crmUpdated.revision, eventRevision: eventUpdated.revision, idempotent: false } }, 200, request, env, requestId, { ETag: `"${crmUpdated.revision}"` })
+}
+
+function airtableConfigured(env) {
+  return Boolean(String(env.AIRTABLE_TOKEN || '').trim() && /^app[a-zA-Z0-9]{8,}$/.test(String(env.AIRTABLE_BASE_ID || '').trim()))
+}
+
+function airtableTable(env) {
+  const value = String(env.AIRTABLE_TABLE_NAME || 'Speaker CRM Contacts').trim()
+  if (!value || value.length > 120) throw new ApiError(503, 'AIRTABLE_CONFIGURATION_INVALID', 'AIRTABLE_TABLE_NAME is invalid.')
+  return value
+}
+
+function airtableContactFields(contact) {
+  return {
+    'OpenSpeaker Contact ID': contact.id, 'First Name': contact.firstName, 'Last Name': contact.lastName, Email: contact.email,
+    Company: contact.company, 'Job Title': contact.jobTitle, Biography: contact.bio, 'LinkedIn URL': contact.linkedinUrl || '', 'Twitter URL': contact.twitterUrl || '',
+    'Travel Preferences': contact.travelPreferences || '', Tags: contact.tags.join(', '), 'Custom Fields JSON': JSON.stringify(contact.customFields), 'Event Links JSON': JSON.stringify(contact.eventLinks), 'Updated At': contact.updatedAt,
+  }
+}
+
+function airtableRunProjection(row) {
+  if (!row) return undefined
+  const response = parseJsonColumn(row.response_json, {})
+  return { runId: row.id, status: row.status, synced: response.synced, replayed: response.replayed, ...(row.error_message ? { error: row.error_message } : {}), completedAt: row.completed_at || undefined }
+}
+
+async function airtableStatus(request, env, requestId, workspaceId) {
+  await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET' })
+  const last = await env.DB.prepare(`SELECT id,status,response_json,error_message,completed_at FROM crm_integration_runs WHERE workspace_id=? AND provider='airtable' ORDER BY created_at DESC LIMIT 1`).bind(workspaceId).first()
+  const count = await env.DB.prepare(`SELECT count(*) AS count FROM crm_airtable_mappings WHERE workspace_id=?`).bind(workspaceId).first()
+  return json({ data: { configured: airtableConfigured(env), mappedContacts: Number(count?.count || 0), ...(last ? { lastRun: airtableRunProjection(last) } : {}) } }, 200, request, env, requestId, { 'Cache-Control': 'private, no-store' })
+}
+
+function airtableApiUrl(env, suffix = '') {
+  const baseId = encodeURIComponent(String(env.AIRTABLE_BASE_ID).trim())
+  const table = encodeURIComponent(airtableTable(env))
+  return `https://api.airtable.com/v0/${baseId}/${table}${suffix}`
+}
+
+async function airtableRequest(env, url, options = {}) {
+  const response = await fetchWithTimeout(url, { ...options, headers: { Authorization: `Bearer ${env.AIRTABLE_TOKEN}`, 'Content-Type': 'application/json', ...(options.headers || {}) } }, env)
+  const payload = await providerPayload(response)
+  if (!response.ok) throw new Error(`Airtable ${response.status}: ${String(payload?.error?.message || payload?.message || 'request failed').slice(0, 500)}`)
+  return payload
+}
+
+async function syncContactToAirtable(env, workspaceId, contact, timestamp) {
+  let mapping = await env.DB.prepare(`SELECT remote_record_id FROM crm_airtable_mappings WHERE workspace_id=? AND contact_id=?`).bind(workspaceId, contact.id).first()
+  const fields = airtableContactFields(contact)
+  if (!mapping) {
+    const formulaId = contact.id.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    const lookupUrl = `${airtableApiUrl(env)}?maxRecords=1&filterByFormula=${encodeURIComponent(`{OpenSpeaker Contact ID}='${formulaId}'`)}`
+    const lookup = await airtableRequest(env, lookupUrl, { method: 'GET' })
+    const remoteId = lookup.records?.[0]?.id
+    if (typeof remoteId === 'string') {
+      await env.DB.prepare(`INSERT INTO crm_airtable_mappings (workspace_id,contact_id,remote_record_id,updated_at) VALUES (?,?,?,?) ON CONFLICT(workspace_id,contact_id) DO UPDATE SET remote_record_id=excluded.remote_record_id,updated_at=excluded.updated_at`).bind(workspaceId, contact.id, remoteId, timestamp).run()
+      mapping = { remote_record_id: remoteId }
+    }
+  }
+  const payload = mapping
+    ? await airtableRequest(env, `${airtableApiUrl(env)}/${encodeURIComponent(mapping.remote_record_id)}`, { method: 'PATCH', body: JSON.stringify({ fields, typecast: true }) })
+    : await airtableRequest(env, airtableApiUrl(env), { method: 'POST', body: JSON.stringify({ records: [{ fields }], typecast: true }) })
+  const remoteId = mapping?.remote_record_id || payload.records?.[0]?.id
+  if (typeof remoteId !== 'string' || !remoteId.startsWith('rec')) throw new Error('Airtable did not return a record ID.')
+  await env.DB.prepare(`INSERT INTO crm_airtable_mappings (workspace_id,contact_id,remote_record_id,updated_at) VALUES (?,?,?,?) ON CONFLICT(workspace_id,contact_id) DO UPDATE SET remote_record_id=excluded.remote_record_id,updated_at=excluded.updated_at`).bind(workspaceId, contact.id, remoteId, timestamp).run()
+}
+
+async function airtableSync(request, env, requestId, workspaceId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
+  if (!airtableConfigured(env)) throw new ApiError(503, 'PROVIDER_NOT_CONFIGURED', 'Configure AIRTABLE_TOKEN and AIRTABLE_BASE_ID to enable Airtable sync.')
+  const body = await jsonBody(request, 50_000)
+  const key = idempotencyKey(body.idempotencyKey)
+  const loaded = await loadCrmDocument(env, workspaceId, access.user.id)
+  assertedCrmRevision(request, body, loaded.revision)
+  const existing = await env.DB.prepare(`SELECT id,status,response_json,error_message,created_at,completed_at FROM crm_integration_runs WHERE workspace_id=? AND provider='airtable' AND idempotency_key=?`).bind(workspaceId, key).first()
+  let resumedRunId
+  if (existing) {
+    if (existing.status === 'running') {
+      const leaseMs = Math.min(3_600_000, Math.max(60_000, Number(env.INTEGRATION_LEASE_MS) || 900_000))
+      const staleBefore = new Date(Date.now() - leaseMs).toISOString()
+      const claimed = await env.DB.prepare(`UPDATE crm_integration_runs SET started_by=?,created_at=? WHERE id=? AND workspace_id=? AND status='running' AND created_at<? RETURNING id`).bind(access.user.id, now(), existing.id, workspaceId, staleBefore).first()
+      if (!claimed) throw new ApiError(409, 'INTEGRATION_IN_PROGRESS', 'This Airtable sync is already running.')
+      resumedRunId = existing.id
+    } else {
+      const replay = airtableRunProjection(existing); replay.replayed = true
+      return json({ data: replay }, 200, request, env, requestId)
+    }
+  }
+  if (loaded.crm.contacts.length > 5_000) throw new ApiError(422, 'AIRTABLE_SYNC_LIMIT', 'A single Airtable run supports at most 5000 contacts.')
+  const runId = resumedRunId || id('crm-run'); const timestamp = now()
+  if (!resumedRunId) {
+    try {
+      await env.DB.prepare(`INSERT INTO crm_integration_runs (id,workspace_id,provider,action,idempotency_key,status,request_json,response_json,started_by,created_at) VALUES (?,?,'airtable','contacts.sync',?,'running',?,'{}',?,?)`).bind(runId, workspaceId, key, JSON.stringify({ revision: loaded.revision, contacts: loaded.crm.contacts.length }), access.user.id, timestamp).run()
+    } catch (error) {
+      if (String(error).includes('UNIQUE')) throw new ApiError(409, 'INTEGRATION_IN_PROGRESS', 'This Airtable sync was started concurrently.')
+      throw error
+    }
+  }
+  let synced = 0
+  try {
+    for (const contact of loaded.crm.contacts) { await syncContactToAirtable(env, workspaceId, contact, now()); synced += 1 }
+    const completedAt = now(); const response = { synced: { contacts: synced }, replayed: false }
+    await env.DB.prepare(`UPDATE crm_integration_runs SET status='succeeded',response_json=?,completed_at=? WHERE id=? AND workspace_id=?`).bind(JSON.stringify(response), completedAt, runId, workspaceId).run()
+    await audit(env, workspaceId, access.user.id, 'crm.airtable.synced', 'crm_integration_run', runId, { revision: loaded.revision, contacts: synced }, requestId)
+    return json({ data: { runId, status: 'succeeded', ...response, completedAt } }, 200, request, env, requestId)
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 1_000); const completedAt = now(); const response = { synced: { contacts: synced }, replayed: false }
+    await env.DB.prepare(`UPDATE crm_integration_runs SET status='failed',response_json=?,error_message=?,completed_at=? WHERE id=? AND workspace_id=?`).bind(JSON.stringify(response), message, completedAt, runId, workspaceId).run()
+    await audit(env, workspaceId, access.user.id, 'crm.airtable.failed', 'crm_integration_run', runId, { revision: loaded.revision, contacts: synced, error: message }, requestId)
+    return json({ data: { runId, status: 'failed', ...response, error: message, completedAt } }, 200, request, env, requestId)
+  }
+}
+
 async function auditList(request, env, requestId, workspaceId) {
   await identityAndMembership(request, env, workspaceId, 'organizer')
   if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET' })
@@ -1811,8 +2400,12 @@ async function routeApi(request, env, requestId) {
   }
   if (url.pathname === '/api/internal/maintenance') return internalMaintenance(request, env, requestId)
 
-  let match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)$/)
+  let match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)\/claim$/)
+  if (match) return publicCfpClaim(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)$/)
   if (match) return publicCfp(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/public\/events\/([^/]+)\/([^/]+)\/(?:feeds\/program|feed)\.(json|xml|ics|ical)$/)
+  if (match) return publicProgramFeed(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3] === 'ical' ? 'ics' : match[3])
   match = url.pathname.match(/^\/api\/public\/events\/([^/]+)\/([^/]+)\/state$/)
   if (match) return publicEventState(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/public\/events\/([^/]+)\/([^/]+)\/speakers\/([^/]+)\/headshot$/)
@@ -1821,6 +2414,14 @@ async function routeApi(request, env, requestId) {
   if (match) return workspaceSession(request, env, requestId, decodeURIComponent(match[1]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events$/)
   if (match) return workspaceEvents(request, env, requestId, decodeURIComponent(match[1]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/crm$/)
+  if (match) return crmDocumentRoute(request, env, requestId, decodeURIComponent(match[1]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/crm\/actions\/add-to-event$/)
+  if (match) return crmAddToEvent(request, env, requestId, decodeURIComponent(match[1]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/crm\/integrations\/airtable$/)
+  if (match) return airtableStatus(request, env, requestId, decodeURIComponent(match[1]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/crm\/integrations\/airtable\/sync$/)
+  if (match) return airtableSync(request, env, requestId, decodeURIComponent(match[1]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/state\/history(?:\/(\d+))?$/)
   if (match) return eventStateHistory(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3])
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/state\/rollback$/)

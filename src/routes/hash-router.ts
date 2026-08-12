@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 
-export type AppRoute = 'dashboard' | 'submissions' | 'cfp' | 'cfp-builder' | 'reviews' | 'speakers' | 'deliverables' | 'agenda' | 'communications' | 'embeds' | 'portal' | 'event' | 'settings' | 'admin'
+export type AppRoute = 'dashboard' | 'submissions' | 'cfp' | 'cfp-builder' | 'reviews' | 'speakers' | 'crm' | 'deliverables' | 'agenda' | 'communications' | 'embeds' | 'portal' | 'event' | 'settings' | 'admin'
 
-const validRoutes = new Set<AppRoute>(['dashboard', 'submissions', 'cfp', 'cfp-builder', 'reviews', 'speakers', 'deliverables', 'agenda', 'communications', 'embeds', 'portal', 'event', 'settings', 'admin'])
+const validRoutes = new Set<AppRoute>(['dashboard', 'submissions', 'cfp', 'cfp-builder', 'reviews', 'speakers', 'crm', 'deliverables', 'agenda', 'communications', 'embeds', 'portal', 'event', 'settings', 'admin'])
 
 function currentRoute(): AppRoute {
   const route = window.location.hash.replace(/^#\/?/, '').split('/')[0] as AppRoute

@@ -67,6 +67,25 @@ describe('shipped Worker contract', () => {
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual(input)
   })
 
+  it('requests and redeems an email-scoped CFP claim without exposing proposal data', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ data: { status: 'pending' } }, { status: 202 }))
+      .mockResolvedValueOnce(json({ data: { claimed: true, eventId: 'event-summit' } }))
+    const api = client(fetcher)
+    const request = { email: 'ada@example.test', returnUrl: 'https://app.example.test/?eventSlug=summit-2026#/cfp' }
+
+    await expect(api.requestCfpClaim(request)).resolves.toEqual({ status: 'pending' })
+    await expect(api.verifyCfpClaim('one time/+token')).resolves.toEqual({ claimed: true, eventId: 'event-summit' })
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.test/api/public/cfp/workspace-main/summit-2026/claim',
+      'https://api.example.test/api/public/cfp/workspace-main/summit-2026/claim?token=one%20time%2F%2Btoken',
+    ])
+    expect(fetcher.mock.calls[0][1]?.method).toBe('POST')
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual(request)
+    expect(fetcher.mock.calls[1][1]?.credentials).toBe('include')
+  })
+
   it('uploads raw file bytes with Worker headers and downloads private bytes', async () => {
     const file = new File(['slides'], 'deck.pdf', { type: 'application/pdf' })
     const fetcher = vi.fn<typeof fetch>()

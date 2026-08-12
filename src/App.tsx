@@ -1,6 +1,7 @@
 import { useEffect, useState, type ComponentType, type FormEvent } from 'react'
 import {
   BookOpen,
+  ContactRound,
   CalendarDays,
   ChevronLeft,
   Files,
@@ -26,6 +27,7 @@ import type { WorkspaceEventSummary } from './services'
 import { AgendaBuilder } from './features/agenda'
 import { AdminWorkspace } from './features/admin'
 import { CommunicationsCenter } from './features/communications'
+import { CrmWorkspace } from './features/crm'
 import { Dashboard } from './features/dashboard/Dashboard'
 import { DeliverablesWorkspace } from './features/deliverables'
 import { EmbedManager } from './features/embeds'
@@ -58,6 +60,9 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     { route: 'agenda', label: 'Agenda', icon: CalendarDays },
     { route: 'communications', label: 'Communications', icon: MessageSquareText },
   ] },
+  { label: 'Organization', items: [
+    { route: 'crm', label: 'Speaker CRM', icon: ContactRound },
+  ] },
   { label: 'Experience', items: [
     { route: 'embeds', label: 'Embeds & widgets', icon: Share2 },
     { route: 'portal', label: 'Speaker portal', icon: BookOpen },
@@ -72,6 +77,7 @@ const routeTitles: Record<AppRoute, string> = {
   'cfp-builder': 'CFP form builder',
   reviews: 'Review workspace',
   speakers: 'Speakers',
+  crm: 'Speaker CRM',
   deliverables: 'Deliverables',
   agenda: 'Agenda builder',
   communications: 'Communications',
@@ -228,6 +234,7 @@ export default function App() {
         {route === 'cfp-builder' && <CfpBuilder publicPath={`${window.location.origin}${window.location.pathname}#/cfp`} />}
         {route === 'reviews' && <ReviewWorkspace initialSubmissionId={reviewSubmissionId} onDecision={() => go('submissions')} />}
         {route === 'speakers' && <OrganizerSpeakers />}
+        {route === 'crm' && <CrmWorkspace />}
         {route === 'deliverables' && <DeliverablesWorkspace />}
         {route === 'agenda' && <AgendaBuilder />}
         {route === 'communications' && <CommunicationsCenter />}

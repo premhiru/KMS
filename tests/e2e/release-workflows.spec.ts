@@ -45,7 +45,7 @@ test('anonymous CFP validates, focuses the first error, and submits to the publi
   await page.getByLabel(/Audience experience level/i).selectOption('Intermediate')
   await page.getByLabel('First name').fill('Avery')
   await page.getByLabel('Last name').fill('Jordan')
-  await page.getByLabel(/^Email/).fill('avery@example.com')
+  await page.locator('.sb-cfp-form').getByLabel(/^Email/).fill('avery@example.com')
   await page.getByLabel('Short bio').fill('Avery builds and operates dependable automation systems for product teams worldwide.')
   await page.getByRole('button', { name: /Submit proposal/ }).click()
 
@@ -53,6 +53,20 @@ test('anonymous CFP validates, focuses the first error, and submits to the publi
   await expect(page.getByText('Contact email')).toBeVisible()
   expect(api.cfpSubmissions).toHaveLength(1)
   expect(api.cfpSubmissions[0]).toMatchObject({ speakerEmail: 'avery@example.com', consent: true })
+
+  await page.getByRole('button', { name: 'Email me a secure access link' }).click()
+  await expect(page.getByText(/one-time access link is on its way/)).toBeVisible()
+  expect(api.claimRequests).toEqual([expect.objectContaining({ email: 'avery@example.com', returnUrl: expect.stringContaining('#/cfp') })])
+  await expectNoSeriousAccessibilityViolations(page)
+
+  await page.goto('/?claimToken=e2e-claim-token#/cfp')
+  await expect(page.getByRole('heading', { name: 'Welcome, Avery' })).toBeVisible()
+  await expect(page.getByLabel('Choose proposal')).toContainText('Shipping reliable agent workflows')
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue('Shipping reliable agent workflows')
+  await expect(page.getByText('Beyond the chatbot: building reliable AI agents', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Submissions', exact: true })).toHaveCount(0)
+  await expect(page).not.toHaveURL(/claimToken=/)
+  expect(api.claimVerifications).toEqual(['e2e-claim-token'])
   await expectNoSeriousAccessibilityViolations(page)
 })
 

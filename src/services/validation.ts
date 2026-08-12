@@ -9,6 +9,8 @@ import type {
   MemberMutationReceipt,
   AcceleventsSyncReceipt,
   PublicCfpMetadata,
+  PublicCfpClaimReceipt,
+  PublicCfpClaimRequestReceipt,
   PublicCfpSubmissionReceipt,
   PublicEventState,
   PublicSubmissionRecord,
@@ -221,6 +223,22 @@ export function parseCfpReceipt(value: unknown): PublicCfpSubmissionReceipt {
   if (!isRecord(data)) throw new ResponseValidationError(['CFP receipt data must be an object.'])
   if (data.status !== 'needs-review') issues.push('status must be needs-review.')
   return finish(issues, { id: stringField(data, 'id', issues), status: 'needs-review', submittedAt: stringField(data, 'submittedAt', issues) })
+}
+
+export function parseCfpClaimRequestReceipt(value: unknown): PublicCfpClaimRequestReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['CFP claim request data must be an object.'])
+  if (data.status !== 'pending') issues.push('status must be pending.')
+  return finish(issues, { status: 'pending' })
+}
+
+export function parseCfpClaimReceipt(value: unknown): PublicCfpClaimReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['CFP claim data must be an object.'])
+  if (data.claimed !== true) issues.push('claimed must be true.')
+  return finish(issues, { claimed: true, eventId: stringField(data, 'eventId', issues) })
 }
 
 export function parseUploadedAsset(value: unknown): UploadedAsset {

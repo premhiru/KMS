@@ -5,6 +5,11 @@ export type EmbedDefinition = EventEmbedDefinition
 
 export const embedFields = ['description', 'dateTime', 'room', 'speakers', 'format', 'track'] as const
 
+export interface PublicFeedScope {
+  workspaceId: string
+  eventSlug: string
+}
+
 export function buildEmbedUrl(baseUrl: string, embed: EmbedDefinition): string {
   const url = new URL(baseUrl)
   url.searchParams.set('embed', embed.id)
@@ -20,7 +25,18 @@ export function buildEmbedUrl(baseUrl: string, embed: EmbedDefinition): string {
   return url.toString()
 }
 
-export function embedCode(baseUrl: string, eventName: string, embed: EmbedDefinition, height = 720): string {
+export function buildPublicFeedUrl(baseUrl: string, embed: EmbedDefinition, scope: PublicFeedScope): string {
+  const extension = embed.format === 'ical' ? 'ics' : embed.format
+  const origin = new URL(baseUrl).origin
+  const url = new URL(`/api/public/events/${encodeURIComponent(scope.workspaceId)}/${encodeURIComponent(scope.eventSlug)}/feeds/program.${extension}`, origin)
+  if (embed.track) url.searchParams.set('track', embed.track)
+  if (embed.sessionFormat) url.searchParams.set('format', embed.sessionFormat)
+  if (embed.room) url.searchParams.set('room', embed.room)
+  return url.toString()
+}
+
+export function embedCode(baseUrl: string, eventName: string, embed: EmbedDefinition, height = 720, feedScope?: PublicFeedScope): string {
+  if ((embed.format === 'json' || embed.format === 'xml' || embed.format === 'ical') && feedScope) return buildPublicFeedUrl(baseUrl, embed, feedScope)
   const url = buildEmbedUrl(baseUrl, embed)
   if (embed.format === 'json' || embed.format === 'xml' || embed.format === 'ical') return url
   const className = embed.format === 'basic-html' ? ' class="openspeaker-embed openspeaker-embed--basic"' : ' class="openspeaker-embed"'

@@ -155,6 +155,20 @@ export interface PublicCfpSubmissionReceipt {
   submittedAt: string
 }
 
+export interface PublicCfpClaimRequestInput {
+  email: string
+  returnUrl: string
+}
+
+export interface PublicCfpClaimRequestReceipt {
+  status: 'pending'
+}
+
+export interface PublicCfpClaimReceipt {
+  claimed: true
+  eventId: Id
+}
+
 export interface UploadedAsset {
   id: Id
   fileName: string

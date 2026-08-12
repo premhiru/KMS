@@ -13,6 +13,9 @@ import type {
   MemberInput,
   MemberMutationReceipt,
   PublicCfpMetadata,
+  PublicCfpClaimReceipt,
+  PublicCfpClaimRequestInput,
+  PublicCfpClaimRequestReceipt,
   PublicCfpSubmissionInput,
   PublicCfpSubmissionReceipt,
   PublicEventState,
@@ -51,6 +54,8 @@ import {
   parseAudit,
   parseAcceleventsReceipt,
   parseCfpReceipt,
+  parseCfpClaimReceipt,
+  parseCfpClaimRequestReceipt,
   parseHealth,
   parseIntegrationStatus,
   parseMemberReceipt,
@@ -195,6 +200,23 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
     return this.transport.request({
       path: `api/public/cfp/${segment(this.workspaceId)}/${segment(this.eventSlug)}`, method: 'POST', body: input,
       signal: options.signal, timeoutMs: options.timeoutMs, parse: parseCfpReceipt,
+    })
+  }
+
+  requestCfpClaim(input: PublicCfpClaimRequestInput, options: RequestOptions = {}): Promise<PublicCfpClaimRequestReceipt> {
+    return this.transport.request({
+      path: `api/public/cfp/${segment(this.workspaceId)}/${segment(this.eventSlug)}/claim`, method: 'POST', body: input,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseCfpClaimRequestReceipt,
+    })
+  }
+
+  verifyCfpClaim(token: string, options: RequestOptions = {}): Promise<PublicCfpClaimReceipt> {
+    if (!token.trim()) return Promise.reject(new ApiError('A claim token is required.', {
+      code: 'CLAIM_TOKEN_REQUIRED', requestId: 'client-validation', method: 'GET', url: `api/public/cfp/${segment(this.workspaceId)}/${segment(this.eventSlug)}/claim`,
+    }))
+    return this.transport.request({
+      path: `api/public/cfp/${segment(this.workspaceId)}/${segment(this.eventSlug)}/claim?token=${encodeURIComponent(token)}`,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseCfpClaimReceipt,
     })
   }
 

@@ -4,6 +4,7 @@ import {
   ApiError,
   OpenSpeakerApiClient,
   type PublicCfpSubmissionInput,
+  type PublicCfpClaimRequestInput,
   type ReviewerMutationInput,
   type ReviewerMutationReceipt,
   type ReviewerQueue,
@@ -107,7 +108,9 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
         try {
           identity = await api.getSession({ signal: controller.signal })
         } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 403) throw error
+          // An event-scoped CFP claim intentionally does not authenticate general workspace routes.
+          // Continue to the narrowly scoped portal probe for both anonymous and non-member identities.
+          if (!(error instanceof ApiError) || (error.status !== 401 && error.status !== 403)) throw error
         }
 
         if (identity?.role === 'owner' || identity?.role === 'organizer') {
@@ -282,6 +285,8 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   const importJson = useCallback((json: string) => { const result = importAppState(json); if (result.ok) dispatch({ type: 'state/replace', state: result.value }); return result }, [dispatch])
   const exportJson = useCallback(() => exportAppState(state), [state])
   const submitCfp = useCallback(async (input: PublicCfpSubmissionInput) => { if (!api) throw new Error('Public submission transport is available on the deployed application.'); return api.submitCfp(input) }, [api])
+  const requestCfpClaim = useCallback(async (input: PublicCfpClaimRequestInput) => { if (!api) throw new Error('Secure proposal access is available on the deployed application.'); return api.requestCfpClaim(input) }, [api])
+  const verifyCfpClaim = useCallback(async (token: string) => { if (!api) throw new Error('Secure proposal access is available on the deployed application.'); return api.verifyCfpClaim(token) }, [api])
   const uploadAsset = useCallback(async (file: File) => { if (!api || persistenceMode !== 'remote') throw new Error('Durable file storage is available to authenticated users on the deployed application.'); return api.uploadAsset(file) }, [api, persistenceMode])
   const downloadAsset = useCallback(async (assetId: string) => { if (!api || persistenceMode !== 'remote') throw new Error('Durable file storage is available to authenticated users on the deployed application.'); return api.downloadAsset(assetId) }, [api, persistenceMode])
   const saveSpeakerProposal = useCallback(async (input: Omit<SpeakerProposalMutationInput, 'expectedRevision'>, submissionId?: string) => {
@@ -346,6 +351,6 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     }
   }, [acceptLoaded, api, session?.role])
 
-  const value = useMemo(() => ({ state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, saveSpeakerProposal, submitAssignedReview }), [state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, uploadAsset, downloadAsset, saveSpeakerProposal, submitAssignedReview])
+  const value = useMemo(() => ({ state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, requestCfpClaim, verifyCfpClaim, uploadAsset, downloadAsset, saveSpeakerProposal, submitAssignedReview }), [state, dispatch, persistenceError, persistenceMode, syncStatus, api, session, reset, importJson, exportJson, submitCfp, requestCfpClaim, verifyCfpClaim, uploadAsset, downloadAsset, saveSpeakerProposal, submitAssignedReview])
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

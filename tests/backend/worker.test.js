@@ -168,6 +168,53 @@ describe('public state projection', () => {
   })
 })
 
+describe('anonymous public program feeds', () => {
+  it('serves privacy-safe JSON, XML, and iCalendar with native MIME types and caching', async () => {
+    const DB = new D1Mock()
+    const env = { DB, ALLOW_LOCAL_AUTH: 'true' }
+    const headers = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-feeds', 'oai-authenticated-user-email': 'feeds@example.com' }
+    const speaker = { id: 'speaker-feed', firstName: 'Ada', lastName: 'Lovelace', email: 'private@example.com', company: 'Analytical Engines', jobTitle: 'Engineer', bio: 'Public biography', status: 'confirmed', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    const submission = { id: 'submission-feed', title: 'Reliable AI & <systems>', abstract: 'A public program description with practical details.', track: 'AI', format: 'Talk', durationMinutes: 30, speakerIds: [speaker.id], status: 'accepted', tags: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    const state = validAppState('event-feeds', {
+      event: { name: 'Feed Summit', slug: 'feed-summit', venue: 'Convention Hall' }, speakers: [speaker], submissions: [submission],
+      sessions: [{ id: 'session-feed', submissionId: submission.id, room: 'Main', startAt: '2026-09-01T10:00:00.000Z', endAt: '2026-09-01T10:30:00.000Z', published: true, updatedAt: '2026-02-01T00:00:00.000Z' }],
+      reviews: [{ id: 'private-review', submissionId: submission.id, reviewerName: 'Private Reviewer', scores: { relevance: 5 }, note: 'Never publish', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    })
+    const stateEndpoint = 'https://app.test/api/workspaces/workspace-feeds/events/event-feeds/state'
+    expect((await fetchHandler(new Request(stateEndpoint, { method: 'PUT', headers, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)).status).toBe(201)
+
+    const base = 'https://app.test/api/public/events/workspace-feeds/feed-summit/feeds/program'
+    const jsonResponse = await fetchHandler(new Request(`${base}.json`), env)
+    expect(jsonResponse.status).toBe(200)
+    expect(jsonResponse.headers.get('content-type')).toBe('application/json; charset=utf-8')
+    expect(jsonResponse.headers.get('access-control-allow-origin')).toBe('*')
+    expect(jsonResponse.headers.get('cache-control')).toContain('max-age=300')
+    const jsonPayload = await jsonResponse.json()
+    expect(jsonPayload.sessions).toEqual([expect.objectContaining({ id: 'session-feed', title: 'Reliable AI & <systems>', track: 'AI', speakers: [expect.objectContaining({ name: 'Ada Lovelace' })] })])
+    expect(JSON.stringify(jsonPayload)).not.toContain('private@example.com')
+    expect(JSON.stringify(jsonPayload)).not.toContain('Never publish')
+    const notModified = await fetchHandler(new Request(`${base}.json`, { headers: { 'if-none-match': jsonResponse.headers.get('etag') } }), env)
+    expect(notModified.status).toBe(304)
+    const filtered = await (await fetchHandler(new Request(`${base}.json?track=Other`), env)).json()
+    expect(filtered.sessions).toEqual([])
+
+    const xmlResponse = await fetchHandler(new Request(`${base}.xml`), env)
+    expect(xmlResponse.headers.get('content-type')).toBe('application/xml; charset=utf-8')
+    expect(await xmlResponse.text()).toContain('<title>Reliable AI &amp; &lt;systems&gt;</title>')
+    const calendarResponse = await fetchHandler(new Request(`${base}.ics`), env)
+    expect(calendarResponse.headers.get('content-type')).toBe('text/calendar; charset=utf-8')
+    const calendar = await calendarResponse.text()
+    expect(calendar).toContain('METHOD:PUBLISH')
+    expect(calendar).toContain('UID:event-feeds-session-feed@openspeaker.local')
+    expect(calendar).toContain('LOCATION:Main\\, Convention Hall')
+    expect(calendar).not.toContain('private@example.com')
+    const head = await fetchHandler(new Request(`${base}.ics`, { method: 'HEAD' }), env)
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+    DB.database.close()
+  })
+})
+
 describe('public CFP to organizer state lifecycle', () => {
   it('seeds state, accepts an anonymous submission, and returns it exactly once on repeated authenticated reads', async () => {
     const DB = new D1Mock()
@@ -216,6 +263,76 @@ describe('public CFP to organizer state lifecycle', () => {
     const closedSubmission = await fetchHandler(new Request('https://app.test/api/public/cfp/workspace-1/closed', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(proposal) }), env)
     expect(closedSubmission.status).toBe(410)
     expect((await closedSubmission.json()).error.code).toBe('CFP_CLOSED')
+    DB.database.close()
+  })
+})
+
+describe('anonymous CFP proposal claims', () => {
+  it('issues an enumeration-resistant link, consumes it once, and scopes its cookie to one event portal', async () => {
+    const DB = new D1Mock()
+    const env = { DB, RESEND_API_KEY: 'resend-claims', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true' }
+    const ownerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-claims', 'oai-authenticated-user-email': 'owner@example.com' }
+    const speaker = { id: 'speaker-claim', firstName: 'Claimed', lastName: 'Speaker', email: 'claimed@example.com', company: '', jobTitle: '', bio: '', status: 'invited', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    const proposal = { id: 'submission-claim', title: 'Claimed proposal', abstract: 'A complete proposal visible only to its verified speaker.', track: 'AI', format: 'Talk', durationMinutes: 30, speakerIds: [speaker.id], status: 'needs-review', lifecycle: 'submitted', origin: 'cfp', tags: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    for (const [eventId, slug, speakers, submissions] of [['event-claims', 'claims', [speaker], [proposal]], ['event-claims-other', 'claims-other', [], []]]) {
+      const state = validAppState(eventId, { event: { name: `Claims ${slug}`, slug, cfp: { open: true, closeAt: '2099-01-01T00:00:00.000Z' } }, speakers, submissions })
+      const response = await fetchHandler(new Request(`https://app.test/api/workspaces/workspace-claims/events/${eventId}/state`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug, cfpOpen: true, cfpConfig: state.event.cfp }, state }) }), env)
+      expect(response.status).toBe(201)
+    }
+
+    let link = ''
+    const provider = vi.fn(async (_url, options) => {
+      const payload = JSON.parse(options.body)
+      link = payload.text.match(/https:\/\/[^\s]+/)?.[0] || ''
+      return new Response(JSON.stringify({ id: 'claim-email-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', provider)
+    const claimEndpoint = 'https://app.test/api/public/cfp/workspace-claims/claims/claim'
+    const requestBody = (email) => JSON.stringify({ email, returnUrl: 'https://app.test/#/cfp' })
+    const matched = await fetchHandler(new Request(claimEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.10' }, body: requestBody('claimed@example.com') }), env)
+    const unmatched = await fetchHandler(new Request(claimEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.11' }, body: requestBody('absent@example.com') }), env)
+    expect(matched.status).toBe(202)
+    expect(unmatched.status).toBe(202)
+    expect(await matched.json()).toEqual(await unmatched.json())
+    expect(provider).toHaveBeenCalledTimes(1)
+    expect(link).toContain('https://app.test/?claimToken=')
+    expect(link).toContain('#/cfp')
+    const token = new URL(link).searchParams.get('claimToken')
+    expect(token).toBeTruthy()
+
+    const wrongEvent = await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-claims/claims-other/claim?token=${token}`), env)
+    expect(wrongEvent.status).toBe(401)
+    const redeemed = await fetchHandler(new Request(`${claimEndpoint}?token=${token}`), env)
+    expect(redeemed.status).toBe(200)
+    expect(await redeemed.json()).toMatchObject({ data: { claimed: true, eventId: 'event-claims' } })
+    const setCookie = redeemed.headers.get('set-cookie')
+    expect(setCookie).toContain('openspeaker_cfp_claim=')
+    expect(setCookie).toContain('Path=/api/workspaces/workspace-claims/events/event-claims/speaker-portal')
+    expect(setCookie).toContain('Secure')
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
+    const cookie = setCookie.split(';')[0]
+
+    const replay = await fetchHandler(new Request(`${claimEndpoint}?token=${token}`), env)
+    expect(replay.status).toBe(401)
+    const portal = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-claims/events/event-claims/speaker-portal', { headers: { cookie } }), env)
+    expect(portal.status).toBe(200)
+    expect((await portal.json()).data.portal).toMatchObject({ speaker: { email: 'claimed@example.com' }, submissions: [{ id: 'submission-claim' }] })
+    const otherPortal = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-claims/events/event-claims-other/speaker-portal', { headers: { cookie } }), env)
+    expect(otherPortal.status).toBe(401)
+    const generalSession = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-claims/session', { headers: { cookie } }), env)
+    expect(generalSession.status).toBe(401)
+    const stateDenied = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-claims/events/event-claims/state', { headers: { cookie } }), env)
+    expect(stateDenied.status).toBe(401)
+    const draft = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-claims/events/event-claims/speaker-portal/submissions', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 1, action: 'save-draft', title: 'Claim cookie draft', abstract: '', track: 'AI', format: 'Talk', durationMinutes: 30 }) }), env)
+    expect(draft.status).toBe(201)
+
+    link = ''
+    await fetchHandler(new Request(claimEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.12' }, body: requestBody('claimed@example.com') }), env)
+    const expiringToken = new URL(link).searchParams.get('claimToken')
+    DB.database.prepare(`UPDATE cfp_claim_tokens SET expires_at='2000-01-01T00:00:00.000Z' WHERE consumed_at IS NULL`).run()
+    const expired = await fetchHandler(new Request(`${claimEndpoint}?token=${expiringToken}`), env)
+    expect(expired.status).toBe(401)
     DB.database.close()
   })
 })
@@ -589,6 +706,72 @@ describe('production operations', () => {
   })
 })
 
+describe('workspace CRM and Airtable integration', () => {
+  it('bootstraps cross-event contacts, enforces revisions and tenant roles, links speakers, and durably mirrors only safe fields', async () => {
+    const DB = new D1Mock()
+    const env = { DB, ALLOW_LOCAL_AUTH: 'true', BOOTSTRAP_OWNER_EMAIL: 'owner@example.com', AIRTABLE_TOKEN: 'pat-test', AIRTABLE_BASE_ID: 'app12345678', AIRTABLE_TABLE_NAME: 'Speaker CRM Contacts' }
+    const ownerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-crm', 'oai-authenticated-user-email': 'owner@example.com', 'oai-authenticated-user-full-name': 'CRM Owner' }
+    const state = createSeedState()
+    state.event = { ...state.event, id: 'event-crm', slug: 'crm-summit', name: 'CRM Summit' }
+    const seed = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-crm/events/event-crm/state', { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: true, cfpConfig: state.event.cfp }, state }) }), env)
+    expect(seed.status).toBe(201)
+
+    const crmUrl = 'https://app.test/api/workspaces/workspace-crm/crm'
+    const bootstrapped = await fetchHandler(new Request(crmUrl, { headers: ownerHeaders }), env)
+    expect(bootstrapped.status).toBe(200)
+    const initial = (await bootstrapped.json()).data
+    expect(initial.revision).toBe(1)
+    expect(initial.crm.contacts.length).toBe(state.speakers.length)
+    expect(initial.crm.contacts[0].eventLinks).toEqual(expect.arrayContaining([expect.objectContaining({ eventId: 'event-crm' })]))
+
+    const external = {
+      id: 'crm-contact-external', firstName: 'External', lastName: 'Speaker', email: 'external@example.com', company: 'Acme', jobTitle: 'Engineer', bio: 'A future event speaker.',
+      tags: ['candidate'], customFields: { tier: 'gold' }, notes: [{ id: 'note-private', body: 'Internal relationship context.', authorName: 'CRM Owner', createdAt: '2026-08-12T00:00:00.000Z' }],
+      activity: [{ id: 'activity-created', type: 'created', summary: 'Created in CRM.', createdAt: '2026-08-12T00:00:00.000Z' }], eventLinks: [], createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z',
+    }
+    const nextCrm = { ...initial.crm, contacts: [...initial.crm.contacts, external] }
+    const written = await fetchHandler(new Request(crmUrl, { method: 'PUT', headers: { ...ownerHeaders, 'if-match': '"1"' }, body: JSON.stringify({ expectedRevision: 1, crm: nextCrm }) }), env)
+    expect(written.status).toBe(200)
+    expect((await written.json()).data.revision).toBe(2)
+    const stale = await fetchHandler(new Request(crmUrl, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: 1, crm: nextCrm }) }), env)
+    expect(stale.status).toBe(409)
+    const tenantDenied = await fetchHandler(new Request(crmUrl, { headers: { 'oai-authenticated-user-id': 'outsider', 'oai-authenticated-user-email': 'outsider@example.com' } }), env)
+    expect(tenantDenied.status).toBe(403)
+
+    const linked = await fetchHandler(new Request(`${crmUrl}/actions/add-to-event`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ contactId: external.id, eventId: 'event-crm', expectedRevision: 2 }) }), env)
+    expect(linked.status).toBe(200)
+    const linkedData = (await linked.json()).data
+    expect(linkedData.revision).toBe(3)
+    expect(linkedData.crm.contacts.find((contact) => contact.id === external.id).eventLinks[0]).toMatchObject({ eventId: 'event-crm' })
+
+    const sentBodies = []
+    let recordNumber = 0
+    vi.stubGlobal('fetch', vi.fn(async (_url, options = {}) => {
+      if (options.method === 'GET') return new Response(JSON.stringify({ records: [] }), { status: 200 })
+      sentBodies.push(JSON.parse(options.body))
+      recordNumber += 1
+      return new Response(JSON.stringify({ records: [{ id: `rec${String(recordNumber).padStart(12, '0')}` }] }), { status: 200 })
+    }))
+    const status = await fetchHandler(new Request(`${crmUrl}/integrations/airtable`, { headers: ownerHeaders }), env)
+    expect(await status.json()).toMatchObject({ data: { configured: true, mappedContacts: 0 } })
+    const syncBody = { expectedRevision: 3, idempotencyKey: 'crm-sync-0001' }
+    const synced = await fetchHandler(new Request(`${crmUrl}/integrations/airtable/sync`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify(syncBody) }), env)
+    expect(synced.status).toBe(200)
+    expect((await synced.json()).data).toMatchObject({ status: 'succeeded', synced: { contacts: initial.crm.contacts.length + 1 }, replayed: false })
+    expect(JSON.stringify(sentBodies)).not.toContain('Internal relationship context')
+    expect(JSON.stringify(sentBodies)).not.toContain('activity-created')
+    const replay = await fetchHandler(new Request(`${crmUrl}/integrations/airtable/sync`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify(syncBody) }), env)
+    expect((await replay.json()).data).toMatchObject({ status: 'succeeded', replayed: true })
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { message: 'provider unavailable' } }), { status: 503 })))
+    const failed = await fetchHandler(new Request(`${crmUrl}/integrations/airtable/sync`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ expectedRevision: 3, idempotencyKey: 'crm-sync-0002' }) }), env)
+    expect(failed.status).toBe(200)
+    expect((await failed.json()).data).toMatchObject({ status: 'failed', error: expect.stringContaining('provider unavailable') })
+    const failedStatus = await fetchHandler(new Request(`${crmUrl}/integrations/airtable`, { headers: ownerHeaders }), env)
+    expect((await failedStatus.json()).data.lastRun).toMatchObject({ status: 'failed', error: expect.stringContaining('provider unavailable') })
+  })
+})
+
 describe('D1 initialization', () => {
   it('does not let an arbitrary first authenticated caller claim an uninitialized workspace', async () => {
     const DB = new D1Mock()
@@ -634,7 +817,7 @@ describe('D1 initialization', () => {
   })
 
   it('keeps each prepared migration as a single SQL statement', () => {
-    expect(MIGRATION_VERSIONS).toEqual(['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes'])
+    expect(MIGRATION_VERSIONS).toEqual(['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm'])
     expect(SCHEMA_STATEMENTS.length).toBeGreaterThan(8)
     for (const statement of SCHEMA_STATEMENTS) {
       expect(statement.trim()).not.toContain(';')

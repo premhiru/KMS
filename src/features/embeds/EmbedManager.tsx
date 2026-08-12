@@ -46,7 +46,7 @@ function blankDefinition(): Omit<
 }
 
 export function EmbedManager() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, api } = useApp();
   const embeds = state.event.embeds ?? [];
   const [editing, setEditing] = useState<EmbedDefinition | undefined>();
   const [draft, setDraft] = useState(blankDefinition);
@@ -152,6 +152,7 @@ export function EmbedManager() {
         state.event.name,
         codeFor,
         state.event.publicProgram?.embedHeight,
+        api ? { workspaceId: api.workspaceId, eventSlug: api.eventSlug } : undefined,
       )
     : "";
   const optionsFor = (embed: EmbedDefinition): PublicWidgetOptions => ({
