@@ -29,6 +29,7 @@ export interface ApiStubControl {
   deliverableReminderSends: Array<Record<string, unknown>>
   reviewerInvitations: Array<Record<string, unknown>>
   speakerInvitations: Array<Record<string, unknown>>
+  speakerInvitationLinks: string[]
   feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }>
   readonly crm: CrmDocument
   readonly crmRevision: number
@@ -90,6 +91,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   const deliverableReminderSends: Array<Record<string, unknown>> = []
   const reviewerInvitations: Array<Record<string, unknown>> = []
   const speakerInvitations: Array<Record<string, unknown>> = []
+  const speakerInvitationLinks: string[] = []
   const feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }> = []
   let crmRevision = 1
   let crm: CrmDocument = {
@@ -105,6 +107,8 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   const crmWrites: CrmDocument[] = []
   let claimedEmail = ''
   let claimedPortalOnly = false
+  const claimTokens = new Map<string, string>()
+  const consumedClaimTokens = new Set<string>()
 
   const openRound = currentState.evaluationRounds?.find((round) => round.status === 'open')
   if (openRound) {
@@ -125,6 +129,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     deliverableReminderSends,
     reviewerInvitations,
     speakerInvitations,
+    speakerInvitationLinks,
     feedRequests,
     get crm() { return crm },
     get crmRevision() { return crmRevision },
@@ -172,13 +177,16 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
         const input = request.postDataJSON() as Record<string, unknown>
         claimRequests.push(input)
         claimedEmail = String(input.email ?? '').toLowerCase()
+        claimTokens.set('e2e-claim-token', claimedEmail)
         return json(route, { data: { status: 'pending' } }, 202)
       }
       if (method === 'GET') {
         const token = url.searchParams.get('token') ?? ''
         claimVerifications.push(token)
-        if (token !== 'e2e-claim-token' || !claimedEmail) return error(route, 401, 'CFP_CLAIM_INVALID', 'This access link is invalid or expired.')
-        email = claimedEmail
+        const tokenEmail = claimTokens.get(token)
+        if (!tokenEmail || consumedClaimTokens.has(token)) return error(route, 401, 'CFP_CLAIM_INVALID', 'This access link is invalid or expired.')
+        consumedClaimTokens.add(token)
+        email = tokenEmail
         claimedPortalOnly = true
         return json(route, { data: { claimed: true, eventId: currentState.event.id } })
       }
@@ -357,6 +365,13 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
       const input = request.postDataJSON() as Record<string, unknown>
       speakerInvitations.push(input)
       const speaker = currentState.speakers.find((item) => item.id === input.speakerId)
+      const token = `e2e-speaker-invite-token-${String(speakerInvitations.length).padStart(16, '0')}`
+      const targetEmail = speaker?.email.toLowerCase() ?? ''
+      claimTokens.set(token, targetEmail)
+      const link = new URL(String(input.returnUrl))
+      link.searchParams.delete('cfpClaim')
+      link.searchParams.set('claimToken', token)
+      speakerInvitationLinks.push(link.toString())
       return json(route, { data: { invitationId: `speaker-invite-${speakerInvitations.length}`, email: speaker?.email ?? '', status: 'sent', providerMessageId: 'speaker-provider-1', expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }, 201)
     }
 

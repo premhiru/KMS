@@ -17,6 +17,7 @@ import { canAcceptRemoteSnapshot, rebaseAppState, reconcileSavedState } from './
 import { appReducer, type AppAction } from './reducer'
 import { applyReviewerReceipt } from './review-reconcile'
 import { exportAppState, importAppState, loadAppState, resetAppState, saveAppState } from './storage'
+import { redeemSpeakerClaimOnce, speakerClaimToken, stripSpeakerClaimFromUrl } from './speaker-claim-handoff'
 
 export interface AppProviderProps {
   children: ReactNode
@@ -71,6 +72,11 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   const pollingRef = useRef(false)
   const pollGenerationRef = useRef(0)
   const localMutationVersionRef = useRef(0)
+  // Keep the initial handoff across React StrictMode's effect cleanup/replay.
+  // The first setup removes the secret from the URL immediately; the replay
+  // must still take the same speaker-only branch rather than hydrating an
+  // unrelated hosting identity from the now-clean address.
+  const portalClaimRef = useRef<string | undefined>(speakerClaimToken(new URL(window.location.href), window.location.hash.startsWith('#/portal')))
 
   const dispatch = useCallback((action: AppAction) => {
     localMutationVersionRef.current += 1
@@ -94,6 +100,13 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     const docsRoute = window.location.hash.startsWith('#/docs')
     const cfpRoute = window.location.hash.startsWith('#/cfp')
     const eventRoute = window.location.hash.startsWith('#/event')
+    const initialUrl = new URL(window.location.href)
+    const portalClaimToken = portalClaimRef.current
+    // Tokens are secrets and must leave the address bar immediately. A token on
+    // any non-CFP route is ignored; only #/portal can establish speaker access.
+    if (!cfpRoute && (initialUrl.searchParams.has('claimToken') || initialUrl.searchParams.has('cfpClaim'))) {
+      window.history.replaceState(window.history.state, '', stripSpeakerClaimFromUrl(initialUrl))
+    }
     void (async () => {
       try {
         if (docsRoute) {
@@ -107,6 +120,17 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
           if (!publicState) throw new Error('This public event has not been initialized.')
           setPersistenceMode('public-readonly')
           acceptLoaded(publicState, loaded.revision)
+          return
+        }
+
+        // A one-time speaker invitation is event-scoped authority in its own
+        // right. Redeem it before probing hosting identity so a browser that is
+        // also signed in as an organizer enters only the invited speaker portal.
+        if (portalClaimToken) {
+          await redeemSpeakerClaimOnce(api, portalClaimToken)
+          const portal = await api.getSpeakerPortal({ signal: controller.signal })
+          setSession({ user: { id: '', email: portal.portal.speaker.email, name: `${portal.portal.speaker.firstName} ${portal.portal.speaker.lastName}`.trim() }, role: 'speaker' })
+          acceptLoaded(portalToState(portal.portal), portal.revision)
           return
         }
 

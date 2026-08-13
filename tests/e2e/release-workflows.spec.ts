@@ -69,6 +69,48 @@ test('deliverables send real email receipts and reviewer/speaker invitations are
   await expectNoSeriousAccessibilityViolations(page)
 })
 
+test('speaker invitation hands an organizer browser into an editable scoped portal and is one-time', async ({ page }) => {
+  const api = await installApiStub(page, { role: 'owner' })
+  await page.goto('/#/speakers')
+
+  await page.getByRole('button', { name: 'Send portal invite' }).first().click()
+  await expect.poll(() => api.speakerInvitationLinks.length).toBe(1)
+  const invitedSpeakerId = String(api.speakerInvitations[0].speakerId)
+  const invitedSpeaker = api.state.speakers.find((speaker) => speaker.id === invitedSpeakerId)!
+  const inviteLink = api.speakerInvitationLinks[0]
+  expect(inviteLink).toContain('claimToken=')
+  expect(inviteLink).toContain('#/portal')
+
+  // The claim must take precedence over the owner session in this same browser.
+  await page.goto(inviteLink)
+  await expect(page.getByRole('heading', { name: `Welcome, ${invitedSpeaker.firstName}` })).toBeVisible()
+  await expect(page.locator('#organizer-navigation')).toHaveCount(0)
+  await expect(page.getByText('Read-only participant preview')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Save profile' })).toBeEnabled()
+  await expect(page).not.toHaveURL(/claimToken=/)
+  expect(api.claimVerifications).toHaveLength(1)
+
+  await page.getByLabel('Company').fill('Invitation Handoff Labs')
+  await page.getByRole('button', { name: 'Save profile' }).click()
+  await expect.poll(() => api.portalWrites.some((write) => (write.profile as { company?: string })?.company === 'Invitation Handoff Labs')).toBe(true)
+
+  // Replaying the consumed link must not fall back to the extant speaker session.
+  await page.goto(inviteLink)
+  await expect(page.getByRole('heading', { name: 'Organizer sign-in required' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: `Welcome, ${invitedSpeaker.firstName}` })).toHaveCount(0)
+  expect(api.claimVerifications).toHaveLength(2)
+})
+
+test('invalid speaker claim fails closed instead of falling back to an organizer session', async ({ page }) => {
+  const api = await installApiStub(page, { role: 'owner' })
+  await page.goto('/?claimToken=invalid-speaker-claim#/portal')
+
+  await expect(page.getByRole('heading', { name: 'Organizer sign-in required' })).toBeVisible()
+  await expect(page.locator('#organizer-navigation')).toHaveCount(0)
+  await expect(page.getByText('Read-only participant preview')).toHaveCount(0)
+  expect(api.claimVerifications).toEqual(['invalid-speaker-claim'])
+})
+
 test('anonymous CFP validates, focuses the first error, and submits to the public API', async ({ page }) => {
   const api = await installApiStub(page)
   await page.goto('/#/cfp')
@@ -152,6 +194,7 @@ test('remote organizer safety controls cannot reset live data or mutate a portal
 
   await expect(page.getByRole('button', { name: /Reset local preview/i })).toHaveCount(0)
   await page.goto('/#/portal')
+  await expect(page.locator('#organizer-navigation')).toBeVisible()
   await expect(page.getByText('Read-only participant preview')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Welcome, Maya' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Accept invitation' })).toBeDisabled()

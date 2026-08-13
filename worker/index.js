@@ -496,18 +496,21 @@ async function authenticatedUser(request, env) {
 }
 
 async function speakerIdentityForEvent(request, env, workspaceId, eventId) {
+  const rawSession = cookieValue(request, 'openspeaker_cfp_claim')
+  if (/^[A-Za-z0-9_-]{40,100}$/.test(rawSession)) {
+    const sessionHash = await sha256(rawSession)
+    const session = await env.DB.prepare(`SELECT user_id,speaker_email,expires_at FROM cfp_claim_sessions WHERE session_hash=? AND workspace_id=? AND event_id=? AND expires_at>?`).bind(sessionHash, workspaceId, eventId, now()).first()
+    if (session) {
+      await env.DB.prepare(`UPDATE cfp_claim_sessions SET last_used_at=? WHERE session_hash=? AND workspace_id=? AND event_id=?`).bind(now(), sessionHash, workspaceId, eventId).run()
+      return { user: { id: session.user_id, email: session.speaker_email, name: '' }, claimed: true }
+    }
+  }
   try {
     return { user: await authenticatedUser(request, env), claimed: false }
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== 'AUTH_REQUIRED') throw error
   }
-  const rawSession = cookieValue(request, 'openspeaker_cfp_claim')
-  if (!/^[A-Za-z0-9_-]{40,100}$/.test(rawSession)) throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event proposal claim is required.')
-  const sessionHash = await sha256(rawSession)
-  const session = await env.DB.prepare(`SELECT user_id,speaker_email,expires_at FROM cfp_claim_sessions WHERE session_hash=? AND workspace_id=? AND event_id=? AND expires_at>?`).bind(sessionHash, workspaceId, eventId, now()).first()
-  if (!session) throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event proposal claim is required.')
-  await env.DB.prepare(`UPDATE cfp_claim_sessions SET last_used_at=? WHERE session_hash=? AND workspace_id=? AND event_id=?`).bind(now(), sessionHash, workspaceId, eventId).run()
-  return { user: { id: session.user_id, email: session.speaker_email, name: '' }, claimed: true }
+  throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event proposal claim is required.')
 }
 
 async function reviewerIdentityForEvent(request, env, workspaceId, eventId) {
@@ -686,6 +689,15 @@ function cfpClaimReturnUrl(request, value, token) {
   return returnUrl.toString()
 }
 
+function speakerPortalUrl(request, workspaceId, eventId, eventSlug) {
+  const portalUrl = new URL('/', request.url)
+  portalUrl.searchParams.set('workspaceId', workspaceId)
+  portalUrl.searchParams.set('eventId', eventId)
+  portalUrl.searchParams.set('eventSlug', eventSlug)
+  portalUrl.hash = '/portal'
+  return portalUrl.toString()
+}
+
 async function enforceCfpClaimRateLimit(request, env, workspaceId, eventId, email) {
   const seconds = Math.max(60, Number(env.CFP_CLAIM_RATE_WINDOW_SECONDS) || 900)
   const limit = Math.max(1, Number(env.CFP_CLAIM_RATE_LIMIT) || 5)
@@ -743,7 +755,7 @@ async function publicCfpClaim(request, env, requestId, workspaceId, eventSlug) {
   if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET, POST' })
   const token = url.searchParams.get('token') || ''
   if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new ApiError(401, 'CLAIM_INVALID_OR_EXPIRED', 'This access link is invalid, expired, or already used.')
-  const event = await env.DB.prepare(`SELECT id FROM events WHERE workspace_id=? AND slug=?`).bind(workspaceId, eventSlug).first()
+  const event = await env.DB.prepare(`SELECT id,slug FROM events WHERE workspace_id=? AND slug=?`).bind(workspaceId, eventSlug).first()
   if (!event) throw new ApiError(401, 'CLAIM_INVALID_OR_EXPIRED', 'This access link is invalid, expired, or already used.')
   const tokenHash = await sha256(token)
   const claim = await env.DB.prepare(`SELECT id,speaker_email,expires_at FROM cfp_claim_tokens WHERE workspace_id=? AND event_id=? AND token_hash=? AND consumed_at IS NULL AND expires_at>?`).bind(workspaceId, event.id, tokenHash, now()).first()
@@ -765,7 +777,7 @@ async function publicCfpClaim(request, env, requestId, workspaceId, eventSlug) {
   const cookiePath = `/api/workspaces/${encodeURIComponent(workspaceId)}/events/${encodeURIComponent(event.id)}/speaker-portal`
   const cookie = `openspeaker_cfp_claim=${sessionToken}; Path=${cookiePath}; Max-Age=${sessionSeconds}; Secure; HttpOnly; SameSite=Lax`
   await audit(env, workspaceId, null, 'cfp.claim.redeemed', 'event', event.id, { claimId: claim.id, expiresAt: sessionExpiresAt }, requestId)
-  return json({ data: { claimed: true, eventId: event.id } }, 200, request, env, requestId, { 'Set-Cookie': cookie })
+  return json({ data: { claimed: true, workspaceId, eventId: event.id, eventSlug: event.slug, portalRoute: '#/portal', portalUrl: speakerPortalUrl(request, workspaceId, event.id, event.slug), expiresAt: sessionExpiresAt } }, 200, request, env, requestId, { 'Set-Cookie': cookie })
 }
 
 function reviewerInvitationReturnUrl(request, value, token) {
@@ -882,7 +894,7 @@ async function speakerInvitations(request, env, requestId, workspaceId, eventId)
     errorMessage = error instanceof Error ? error.message.slice(0, 1000) : 'Speaker invitation delivery failed.'
   }
   await audit(env, workspaceId, access.user.id, `speaker.invitation.${status}`, 'speaker', speaker.id, { claimId, eventId, email: speaker.email, providerMessageId, errorMessage }, requestId)
-  return json({ data: { invitationId: claimId, speakerId: speaker.id, email: speaker.email.toLowerCase(), status, providerMessageId, errorMessage, expiresAt } }, status === 'sent' ? 201 : 502, request, env, requestId)
+  return json({ data: { invitationId: claimId, workspaceId, eventId, eventSlug: loaded.state.event.slug, speakerId: speaker.id, email: speaker.email.toLowerCase(), status, providerMessageId, errorMessage, expiresAt, portalRoute: '#/portal', portalUrl: speakerPortalUrl(request, workspaceId, eventId, loaded.state.event.slug) } }, status === 'sent' ? 201 : 502, request, env, requestId)
 }
 
 async function redeemReviewerInvitation(request, env, requestId, workspaceId, eventId) {

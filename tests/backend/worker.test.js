@@ -613,24 +613,43 @@ describe('production operations', () => {
     const state = validAppState(eventId, { event: { name: 'Speaker Summit', slug: 'speaker-summit' }, speakers: [{ id: 'speaker-manual', firstName: 'Mina', lastName: 'Manual', email: 'mina@example.com', company: '', jobTitle: '', bio: '', status: 'invited', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }] })
     expect((await fetchHandler(new Request(`${endpoint}/state`, { method: 'PUT', headers, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)).status).toBe(201)
     let token = ''
+    let invitationLink = ''
     vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
       const payload = JSON.parse(options.body)
       expect(payload.to).toEqual(['mina@example.com'])
       const link = payload.text.match(/https:\/\/[^\s]+claimToken=([^\s]+)/)?.[0]
+      invitationLink = link
       token = new URL(link).searchParams.get('claimToken')
       return new Response(JSON.stringify({ id: 'resend-speaker-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }))
     const invite = await fetchHandler(new Request(`${endpoint}/speaker-invitations`, { method: 'POST', headers, body: JSON.stringify({ speakerId: 'speaker-manual', returnUrl: 'https://app.test/?eventId=event-speaker-invite&eventSlug=speaker-summit#/portal' }) }), env)
     expect(invite.status).toBe(201)
-    expect(await invite.json()).toMatchObject({ data: { speakerId: 'speaker-manual', email: 'mina@example.com', status: 'sent', providerMessageId: 'resend-speaker-1' } })
+    expect(await invite.json()).toMatchObject({ data: { workspaceId: 'workspace-speaker-invite', eventId, eventSlug: 'speaker-summit', speakerId: 'speaker-manual', email: 'mina@example.com', status: 'sent', providerMessageId: 'resend-speaker-1', portalRoute: '#/portal', portalUrl: 'https://app.test/?workspaceId=workspace-speaker-invite&eventId=event-speaker-invite&eventSlug=speaker-summit#/portal' } })
+    expect(invitationLink.indexOf('claimToken=')).toBeLessThan(invitationLink.indexOf('#/portal'))
     expect(token).toMatch(/^[A-Za-z0-9_-]{40,100}$/)
+    const foreignReturnUrl = await fetchHandler(new Request(`${endpoint}/speaker-invitations`, { method: 'POST', headers, body: JSON.stringify({ speakerId: 'speaker-manual', returnUrl: 'https://evil.example/#/portal' }) }), env)
+    expect(foreignReturnUrl.status).toBe(422)
     expect((await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-speaker-invite/wrong-slug/claim?token=${token}`), env)).status).toBe(401)
+    expect((await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-wrong/speaker-summit/claim?token=${token}`), env)).status).toBe(401)
     const redeemed = await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-speaker-invite/speaker-summit/claim?token=${token}`), env)
     expect(redeemed.status).toBe(200)
+    expect(await redeemed.clone().json()).toMatchObject({ data: { claimed: true, workspaceId: 'workspace-speaker-invite', eventId, eventSlug: 'speaker-summit', portalRoute: '#/portal', portalUrl: 'https://app.test/?workspaceId=workspace-speaker-invite&eventId=event-speaker-invite&eventSlug=speaker-summit#/portal' } })
     const cookie = redeemed.headers.get('set-cookie').split(';')[0]
     const portal = await fetchHandler(new Request(`${endpoint}/speaker-portal`, { headers: { cookie } }), env)
     expect(await portal.json()).toMatchObject({ data: { portal: { speaker: { id: 'speaker-manual', email: 'mina@example.com' } } } })
+    const organizerAndClaim = { ...headers, cookie }
+    const portalAsSignedInOrganizer = await fetchHandler(new Request(`${endpoint}/speaker-portal`, { headers: organizerAndClaim }), env)
+    expect(await portalAsSignedInOrganizer.json()).toMatchObject({ data: { portal: { speaker: { id: 'speaker-manual', email: 'mina@example.com' } } } })
+    const claimedProposal = await fetchHandler(new Request(`${endpoint}/speaker-portal/submissions`, { method: 'POST', headers: organizerAndClaim, body: JSON.stringify({ expectedRevision: 1, action: 'save-draft', title: 'Claim-scoped draft', abstract: '', track: 'AI', format: 'Talk', durationMinutes: 30 }) }), env)
+    expect(claimedProposal.status).toBe(201)
+    expect(await claimedProposal.json()).toMatchObject({ data: { revision: 2, proposal: { title: 'Claim-scoped draft', speakerIds: ['speaker-manual'], lifecycle: 'draft' } } })
+    const organizerSession = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-speaker-invite/session', { headers: organizerAndClaim }), env)
+    expect(await organizerSession.json()).toMatchObject({ data: { user: { email: 'owner@example.com' }, role: 'owner' } })
+    expect((await fetchHandler(new Request(`${endpoint}/state`, { headers: organizerAndClaim }), env)).status).toBe(200)
     expect((await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-speaker-invite/speaker-summit/claim?token=${token}`), env)).status).toBe(401)
+    DB.database.prepare(`UPDATE cfp_claim_sessions SET expires_at='2020-01-01T00:00:00.000Z'`).run()
+    expect((await fetchHandler(new Request(`${endpoint}/speaker-portal`, { headers: { cookie } }), env)).status).toBe(401)
+    expect((await fetchHandler(new Request(`${endpoint}/speaker-portal`, { headers: organizerAndClaim }), env)).status).toBe(404)
     DB.database.close()
   })
 
