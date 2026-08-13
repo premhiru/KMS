@@ -58,7 +58,7 @@ test('CRM persists import, filtering, segment, outreach, pipeline, and add-to-ev
   await page.reload()
   await page.getByRole('button', { name: 'segments' }).click()
   await expect(page.getByRole('heading', { name: 'NewCo leaders' })).toBeVisible()
-  await page.getByRole('button', { name: 'history' }).click()
+  await page.getByRole('button', { name: 'history', exact: true }).click()
   await expect(page.getByText(/Invitation for \{\{first_name\}\}/)).toBeVisible()
   expect(api.crmWrites.length).toBeGreaterThanOrEqual(6)
   await expectNoSeriousAccessibilityViolations(page)

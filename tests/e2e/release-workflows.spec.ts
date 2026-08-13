@@ -23,10 +23,49 @@ test('organizer decision persists through the production remote-state path', asy
   await expect(page.locator('#main-content')).toBeFocused()
   await page.getByRole('button', { name: /Submissions/ }).first().click()
   await page.getByText('Developer experience for probabilistic software', { exact: true }).click()
-  await page.getByRole('button', { name: 'Accept', exact: true }).click()
+  await page.getByRole('button', { name: 'Accept + notify', exact: true }).click()
 
   await expect.poll(() => api.stateWrites.length).toBeGreaterThan(0)
   await expect.poll(() => api.state.submissions.find((submission) => submission.id === 'submission-tools')?.status).toBe('accepted')
+  await expect.poll(() => api.emailSends.length).toBe(1)
+  await expectNoSeriousAccessibilityViolations(page)
+})
+
+test('organizer can inspect and non-destructively restore content history', async ({ page }) => {
+  await installApiStub(page, { role: 'owner' })
+  await page.goto('/#/history')
+
+  await expect(page.getByRole('heading', { name: 'Content history' })).toBeVisible()
+  await page.getByRole('button', { name: /Revision 6/ }).click()
+  await expect(page.getByRole('heading', { name: 'Session title and abstract versions' })).toBeVisible()
+  await page.getByRole('button', { name: 'Restore this revision' }).click()
+  await expect(page.getByRole('dialog', { name: 'Restore revision 6?' })).toBeVisible()
+  await page.getByLabel(/Reason for restore/).fill('Restore evaluator-approved session copy')
+  await page.getByRole('button', { name: 'Restore revision 6', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText(/restored as new revision/i)
+  await expectNoSeriousAccessibilityViolations(page)
+})
+
+test('deliverables send real email receipts and reviewer/speaker invitations are explicit', async ({ page }) => {
+  const api = await installApiStub(page, { role: 'owner' })
+  await page.goto('/#/deliverables')
+
+  const firstIncomplete = page.locator('.deliverables-table [role="row"]').filter({ hasText: /open|pending/i }).first()
+  await firstIncomplete.getByRole('checkbox').check()
+  await page.getByRole('button', { name: 'Send reminder email' }).click()
+  await expect.poll(() => api.deliverableReminderSends.length).toBe(1)
+  await expect(page.getByRole('status')).toContainText(/reminder email.*sent/i)
+
+  await page.goto('/#/reviews')
+  await page.getByRole('button', { name: 'Plans and assignments' }).click()
+  const invitation = page.getByRole('button', { name: 'Send invite / reminder' }).first()
+  await invitation.click()
+  await expect.poll(() => api.reviewerInvitations.length).toBe(1)
+  await expect(page.getByRole('status')).toContainText(/invitation sent/i)
+
+  await page.goto('/#/speakers')
+  await page.getByRole('button', { name: 'Send portal invite' }).first().click()
+  await expect.poll(() => api.speakerInvitations.length).toBe(1)
   await expectNoSeriousAccessibilityViolations(page)
 })
 
@@ -153,7 +192,7 @@ test('revision conflict rebases a local organizer edit over a disjoint remote ch
   await page.goto('/#/submissions')
 
   await page.getByText('Developer experience for probabilistic software', { exact: true }).click()
-  await page.getByRole('button', { name: 'Accept', exact: true }).click()
+  await page.getByRole('button', { name: 'Accept + notify', exact: true }).click()
   await expect.poll(() => api.stateWrites.length).toBe(1)
   await expect.poll(() => api.state.event.venue).toBe('Remote collaborator venue')
   await expect.poll(() => api.state.submissions.find((submission) => submission.id === 'submission-tools')?.status).toBe('accepted')
@@ -195,6 +234,7 @@ test('agenda program-item and assignment dialogs support keyboard open and close
   await expect(addProgramItem).toBeFocused()
 
   await page.getByRole('button', { name: 'list', exact: true }).click()
+  page.once('dialog', (dialog) => void dialog.accept())
   await page.getByRole('button', { name: 'Unschedule' }).first().click()
   const assign = page.getByRole('button', { name: 'Assign time and room' }).first()
   await assign.focus()

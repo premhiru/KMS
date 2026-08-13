@@ -32,6 +32,10 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_cfp_claim_tokens_event_email ON cfp_claim_tokens(workspace_id,event_id,speaker_email,created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS cfp_claim_sessions (session_hash TEXT PRIMARY KEY, claim_id TEXT NOT NULL UNIQUE REFERENCES cfp_claim_tokens(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, speaker_email TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_cfp_claim_sessions_event_expiry ON cfp_claim_sessions(workspace_id,event_id,expires_at)`,
+  `CREATE TABLE IF NOT EXISTS reviewer_invitation_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, reviewer_email TEXT NOT NULL, reviewer_name TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, consumed_at TEXT, consume_nonce TEXT, requested_by TEXT NOT NULL REFERENCES users(id), delivery_status TEXT NOT NULL CHECK (delivery_status IN ('queued','sent','failed')), provider_message_id TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_reviewer_invitation_event_email ON reviewer_invitation_tokens(workspace_id,event_id,reviewer_email,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS reviewer_invitation_sessions (session_hash TEXT PRIMARY KEY, invitation_id TEXT NOT NULL UNIQUE REFERENCES reviewer_invitation_tokens(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, reviewer_email TEXT NOT NULL, reviewer_name TEXT NOT NULL DEFAULT '', expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_reviewer_invitation_sessions_event_expiry ON reviewer_invitation_sessions(workspace_id,event_id,expires_at)`,
   `CREATE TABLE IF NOT EXISTS crm_documents (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1 CHECK (revision>0), document_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS crm_history (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, revision INTEGER NOT NULL, document_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'write', PRIMARY KEY (workspace_id,revision))`,
   `CREATE INDEX IF NOT EXISTS idx_crm_history_workspace_revision ON crm_history(workspace_id,revision DESC)`,
@@ -40,7 +44,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS crm_airtable_mappings (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, contact_id TEXT NOT NULL, remote_record_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (workspace_id,contact_id), UNIQUE (workspace_id,remote_record_id))`,
 ]
 
-const MIGRATION_VERSIONS = ['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm']
+const MIGRATION_VERSIONS = ['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm', '0007_reviewer_invitations']
 const BASE_MIGRATION_VERSIONS = MIGRATION_VERSIONS.slice(0, 3)
 
 const ROLE_LEVEL = { speaker: 1, reviewer: 2, organizer: 3, owner: 4 }
@@ -506,6 +510,21 @@ async function speakerIdentityForEvent(request, env, workspaceId, eventId) {
   return { user: { id: session.user_id, email: session.speaker_email, name: '' }, claimed: true }
 }
 
+async function reviewerIdentityForEvent(request, env, workspaceId, eventId) {
+  try {
+    return await identityAndMembership(request, env, workspaceId, 'reviewer')
+  } catch (error) {
+    if (!(error instanceof ApiError) || (error.status !== 401 && error.status !== 403)) throw error
+  }
+  const rawSession = cookieValue(request, 'openspeaker_reviewer_session')
+  if (!/^[A-Za-z0-9_-]{40,100}$/.test(rawSession)) throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event reviewer invitation is required.')
+  const sessionHash = await sha256(rawSession)
+  const session = await env.DB.prepare(`SELECT user_id,reviewer_email,reviewer_name,expires_at FROM reviewer_invitation_sessions WHERE session_hash=? AND workspace_id=? AND event_id=? AND expires_at>?`).bind(sessionHash, workspaceId, eventId, now()).first()
+  if (!session) throw new ApiError(401, 'AUTH_REQUIRED', 'Trusted hosting identity or a valid event reviewer invitation is required.')
+  await env.DB.prepare(`UPDATE reviewer_invitation_sessions SET last_used_at=? WHERE session_hash=? AND workspace_id=? AND event_id=?`).bind(now(), sessionHash, workspaceId, eventId).run()
+  return { user: { id: session.user_id, email: session.reviewer_email, name: session.reviewer_name }, role: 'reviewer', invited: true }
+}
+
 async function audit(env, workspaceId, userId, action, entityType, entityId, metadata, requestId) {
   await env.DB.prepare(`INSERT INTO audit_log (id,workspace_id,actor_user_id,action,entity_type,entity_id,metadata_json,request_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).bind(id('audit'), workspaceId, userId || null, action, entityType, entityId, JSON.stringify(metadata || {}), requestId, now()).run()
 }
@@ -747,6 +766,152 @@ async function publicCfpClaim(request, env, requestId, workspaceId, eventSlug) {
   const cookie = `openspeaker_cfp_claim=${sessionToken}; Path=${cookiePath}; Max-Age=${sessionSeconds}; Secure; HttpOnly; SameSite=Lax`
   await audit(env, workspaceId, null, 'cfp.claim.redeemed', 'event', event.id, { claimId: claim.id, expiresAt: sessionExpiresAt }, requestId)
   return json({ data: { claimed: true, eventId: event.id } }, 200, request, env, requestId, { 'Set-Cookie': cookie })
+}
+
+function reviewerInvitationReturnUrl(request, value, token) {
+  if (typeof value !== 'string' || !value || value.length > 2_000) throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must be a same-origin URL.', { field: 'returnUrl' })
+  let returnUrl
+  try { returnUrl = new URL(value, new URL(request.url).origin) }
+  catch { throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must be a same-origin URL.', { field: 'returnUrl' }) }
+  if (returnUrl.origin !== new URL(request.url).origin) throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must use this application origin.', { field: 'returnUrl' })
+  returnUrl.username = ''
+  returnUrl.password = ''
+  returnUrl.searchParams.delete('reviewerToken')
+  returnUrl.searchParams.set('reviewerToken', token)
+  return returnUrl.toString()
+}
+
+async function enforceReviewerInvitationRateLimit(request, env, workspaceId, eventId, email, actorId) {
+  const seconds = Math.max(60, Number(env.REVIEWER_INVITE_RATE_WINDOW_SECONDS) || 900)
+  const limit = Math.max(1, Number(env.REVIEWER_INVITE_RATE_LIMIT) || 10)
+  const epoch = Math.floor(Date.now() / 1000)
+  const windowStart = Math.floor(epoch / seconds) * seconds
+  const bucketKey = await sha256(`reviewer-invite:${workspaceId}:${eventId}:${actorId}:${email}`)
+  const result = await env.DB.prepare(`INSERT INTO rate_limit_buckets (bucket_key,window_start,count) VALUES (?,?,1) ON CONFLICT(bucket_key,window_start) DO UPDATE SET count=count+1 RETURNING count`).bind(bucketKey, windowStart).first()
+  if (Number(result?.count) > limit) {
+    const retryAfter = Math.max(1, windowStart + seconds - epoch)
+    throw new ApiError(429, 'RATE_LIMITED', 'Too many reviewer invitations. Please try again later.', { retryAfterSeconds: retryAfter }, { 'Retry-After': retryAfter })
+  }
+}
+
+async function reviewerInvitations(request, env, requestId, workspaceId, eventId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM) throw new ApiError(503, 'PROVIDER_NOT_CONFIGURED', 'Configure RESEND_API_KEY and EMAIL_FROM to invite reviewers.', { provider: 'resend' })
+  const body = await jsonBody(request, 20_000)
+  if (!validEmail(body.email)) throw new ApiError(422, 'VALIDATION_ERROR', 'email must be valid.', { field: 'email' })
+  const email = body.email.trim().toLowerCase()
+  const loaded = await loadedEventState(env, workspaceId, eventId)
+  const assignments = Array.isArray(loaded.state.evaluationAssignments) ? loaded.state.evaluationAssignments : []
+  const assigned = assignments.filter((assignment) => assignmentReviewerEmail(assignment) === email)
+  if (assigned.length === 0) throw new ApiError(422, 'REVIEWER_NOT_ASSIGNED', 'Create at least one assignment for this reviewer before sending an invitation.', { email })
+  const reminderRound = body.purpose === 'reminder' && validId(body.roundId) ? (loaded.state.evaluationRounds || []).find((round) => round.id === body.roundId) : null
+  if (body.purpose !== undefined && body.purpose !== 'invite' && body.purpose !== 'reminder') throw new ApiError(422, 'VALIDATION_ERROR', 'purpose must be invite or reminder.', { field: 'purpose' })
+  if (body.purpose === 'reminder' && (!reminderRound || !assigned.some((assignment) => assignment.roundId === reminderRound.id && !['completed', 'abstained'].includes(assignment.status)))) throw new ApiError(422, 'REVIEWER_REMINDER_NOT_APPLICABLE', 'This reviewer has no incomplete assignment in the selected round.', { email, roundId: body.roundId })
+  const reviewerName = String(body.name || assigned.find((assignment) => assignment.reviewerName)?.reviewerName || email.split('@')[0]).trim().slice(0, 120)
+  reviewerInvitationReturnUrl(request, body.returnUrl, 'validation-placeholder')
+  await enforceReviewerInvitationRateLimit(request, env, workspaceId, eventId, email, access.user.id)
+  const rawToken = randomOpaqueToken()
+  const tokenHash = await sha256(rawToken)
+  const invitationId = id('reviewer-invite')
+  const createdAt = now()
+  const lifetimeSeconds = Math.min(7 * 86400, Math.max(900, Number(env.REVIEWER_INVITE_TOKEN_SECONDS) || 48 * 3600))
+  const expiresAt = new Date(Date.parse(createdAt) + lifetimeSeconds * 1000).toISOString()
+  await env.DB.prepare(`INSERT INTO reviewer_invitation_tokens (id,workspace_id,event_id,reviewer_email,reviewer_name,token_hash,expires_at,requested_by,delivery_status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?, 'queued',?,?)`).bind(invitationId, workspaceId, eventId, email, reviewerName, tokenHash, expiresAt, access.user.id, createdAt, createdAt).run()
+  let status = 'failed'
+  let providerMessageId = null
+  let errorMessage = null
+  try {
+    const inviteUrl = reviewerInvitationReturnUrl(request, body.returnUrl, rawToken)
+    const response = await fetchWithTimeout('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', 'Idempotency-Key': `reviewer-invite-${invitationId}` },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM,
+        to: [email],
+        subject: reminderRound ? `${loaded.state.event.name}: ${reminderRound.name} review reminder` : `${loaded.state.event.name}: reviewer invitation`,
+        text: reminderRound
+          ? `Hi ${reviewerName},\n\nPlease complete your remaining ${reminderRound.name} evaluations for ${loaded.state.event.name} by ${new Date(reminderRound.dueAt).toLocaleString('en-US', { timeZone: 'UTC' })} UTC. Use this secure one-time link to return to your assigned queue:\n\n${inviteUrl}\n\nThis link is scoped to this event and can only open your assigned review queue.`
+          : `Hi ${reviewerName},\n\nYou have ${assigned.length} proposal${assigned.length === 1 ? '' : 's'} to review for ${loaded.state.event.name}. Use this one-time link within ${Math.round(lifetimeSeconds / 3600)} hours:\n\n${inviteUrl}\n\nThis link is scoped to this event and can only open your assigned review queue.`,
+      }),
+    }, env)
+    const provider = await providerPayload(response)
+    if (!response.ok) throw new Error(provider.message || `Resend returned HTTP ${response.status}`)
+    status = 'sent'
+    providerMessageId = provider.id || null
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message.slice(0, 1000) : 'Reviewer invitation delivery failed.'
+  }
+  await env.DB.prepare(`UPDATE reviewer_invitation_tokens SET delivery_status=?,provider_message_id=?,error_message=?,updated_at=? WHERE id=? AND workspace_id=? AND event_id=?`).bind(status, providerMessageId, errorMessage, now(), invitationId, workspaceId, eventId).run()
+  await audit(env, workspaceId, access.user.id, `reviewer.${reminderRound ? 'reminder' : 'invitation'}.${status}`, 'reviewer_invitation', invitationId, { eventId, email, assignmentCount: assigned.length, roundId: reminderRound?.id, providerMessageId, errorMessage }, requestId)
+  return json({ data: { invitationId, email, status, providerMessageId, errorMessage, expiresAt, assignmentCount: assigned.length } }, status === 'sent' ? 201 : 502, request, env, requestId)
+}
+
+async function speakerInvitations(request, env, requestId, workspaceId, eventId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM) throw new ApiError(503, 'PROVIDER_NOT_CONFIGURED', 'Configure RESEND_API_KEY and EMAIL_FROM to invite speakers.', { provider: 'resend' })
+  const body = await jsonBody(request, 20_000)
+  if (!validId(body.speakerId)) throw new ApiError(422, 'VALIDATION_ERROR', 'speakerId must be valid.', { field: 'speakerId' })
+  const loaded = await loadedEventState(env, workspaceId, eventId)
+  const speaker = (loaded.state.speakers || []).find((candidate) => candidate.id === body.speakerId)
+  if (!speaker || !validEmail(speaker.email) || speaker.status === 'declined') throw new ApiError(422, 'UNKNOWN_RECIPIENT', 'The speaker must belong to this event and have a valid active email.', { field: 'speakerId' })
+  cfpClaimReturnUrl(request, body.returnUrl, 'validation-placeholder')
+  await enforceCfpClaimRateLimit(request, env, workspaceId, eventId, speaker.email.toLowerCase())
+  const rawToken = randomOpaqueToken()
+  const tokenHash = await sha256(rawToken)
+  const claimId = id('speaker-invite')
+  const createdAt = now()
+  const lifetimeSeconds = Math.min(7 * 86400, Math.max(900, Number(env.SPEAKER_INVITE_TOKEN_SECONDS) || 48 * 3600))
+  const expiresAt = new Date(Date.parse(createdAt) + lifetimeSeconds * 1000).toISOString()
+  await env.DB.prepare(`INSERT INTO cfp_claim_tokens (id,workspace_id,event_id,speaker_email,token_hash,expires_at,requested_ip_hash,created_at) VALUES (?,?,?,?,?,?,?,?)`).bind(claimId, workspaceId, eventId, speaker.email.toLowerCase(), tokenHash, expiresAt, await sha256(`speaker-invite:${access.user.id}`), createdAt).run()
+  let status = 'failed'
+  let providerMessageId = null
+  let errorMessage = null
+  try {
+    const link = cfpClaimReturnUrl(request, body.returnUrl, rawToken)
+    const response = await fetchWithTimeout('https://api.resend.com/emails', {
+      method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', 'Idempotency-Key': `speaker-invite-${claimId}` },
+      body: JSON.stringify({ from: env.EMAIL_FROM, to: [speaker.email], subject: `${loaded.state.event.name}: speaker portal invitation`, text: `Hi ${speaker.firstName || speaker.email},\n\nYou have been invited to ${loaded.state.event.name}. Use this one-time link within ${Math.round(lifetimeSeconds / 3600)} hours to open your private speaker portal, respond to the invitation, complete your profile, and manage deliverables:\n\n${link}\n\nThis link is scoped to this event and can only access your speaker record.` }),
+    }, env)
+    const provider = await providerPayload(response)
+    if (!response.ok) throw new Error(provider.message || `Resend returned HTTP ${response.status}`)
+    status = 'sent'
+    providerMessageId = provider.id || null
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message.slice(0, 1000) : 'Speaker invitation delivery failed.'
+  }
+  await audit(env, workspaceId, access.user.id, `speaker.invitation.${status}`, 'speaker', speaker.id, { claimId, eventId, email: speaker.email, providerMessageId, errorMessage }, requestId)
+  return json({ data: { invitationId: claimId, speakerId: speaker.id, email: speaker.email.toLowerCase(), status, providerMessageId, errorMessage, expiresAt } }, status === 'sent' ? 201 : 502, request, env, requestId)
+}
+
+async function redeemReviewerInvitation(request, env, requestId, workspaceId, eventId) {
+  if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET' })
+  const token = new URL(request.url).searchParams.get('token') || ''
+  if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new ApiError(401, 'REVIEWER_INVITATION_INVALID_OR_EXPIRED', 'This reviewer invitation is invalid, expired, or already used.')
+  const tokenHash = await sha256(token)
+  const invitation = await env.DB.prepare(`SELECT id,reviewer_email,reviewer_name,expires_at FROM reviewer_invitation_tokens WHERE workspace_id=? AND event_id=? AND token_hash=? AND consumed_at IS NULL AND expires_at>? AND delivery_status='sent'`).bind(workspaceId, eventId, tokenHash, now()).first()
+  if (!invitation) throw new ApiError(401, 'REVIEWER_INVITATION_INVALID_OR_EXPIRED', 'This reviewer invitation is invalid, expired, or already used.')
+  const loaded = await loadedEventState(env, workspaceId, eventId)
+  const stillAssigned = (loaded.state.evaluationAssignments || []).some((assignment) => assignmentReviewerEmail(assignment) === invitation.reviewer_email)
+  if (!stillAssigned) throw new ApiError(403, 'REVIEWER_ASSIGNMENT_REMOVED', 'This reviewer no longer has an assignment for this event.')
+  const consumedAt = now()
+  const consumeNonce = randomOpaqueToken(18)
+  const sessionToken = randomOpaqueToken()
+  const sessionHash = await sha256(sessionToken)
+  const userId = `reviewer-invite-${sessionHash.slice(0, 32)}`
+  const sessionSeconds = Math.min(30 * 86400, Math.max(3600, Number(env.REVIEWER_INVITE_SESSION_SECONDS) || 7 * 86400))
+  const sessionExpiresAt = new Date(Date.parse(consumedAt) + sessionSeconds * 1000).toISOString()
+  const results = await env.DB.batch([
+    env.DB.prepare(`UPDATE reviewer_invitation_tokens SET consumed_at=?,consume_nonce=?,updated_at=? WHERE id=? AND workspace_id=? AND event_id=? AND consumed_at IS NULL AND expires_at>?`).bind(consumedAt, consumeNonce, consumedAt, invitation.id, workspaceId, eventId, consumedAt),
+    env.DB.prepare(`INSERT OR IGNORE INTO users (id,email,name,created_at,updated_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM reviewer_invitation_tokens WHERE id=? AND consume_nonce=?)`).bind(userId, invitation.reviewer_email, invitation.reviewer_name, consumedAt, consumedAt, invitation.id, consumeNonce),
+    env.DB.prepare(`INSERT INTO reviewer_invitation_sessions (session_hash,invitation_id,workspace_id,event_id,user_id,reviewer_email,reviewer_name,expires_at,created_at,last_used_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM reviewer_invitation_tokens WHERE id=? AND consume_nonce=?)`).bind(sessionHash, invitation.id, workspaceId, eventId, userId, invitation.reviewer_email, invitation.reviewer_name, sessionExpiresAt, consumedAt, consumedAt, invitation.id, consumeNonce),
+  ])
+  if (Number(results[0]?.meta?.changes || 0) !== 1 || Number(results[2]?.meta?.changes || 0) !== 1) throw new ApiError(401, 'REVIEWER_INVITATION_INVALID_OR_EXPIRED', 'This reviewer invitation is invalid, expired, or already used.')
+  const cookiePath = `/api/workspaces/${encodeURIComponent(workspaceId)}/events/${encodeURIComponent(eventId)}/`
+  const cookie = `openspeaker_reviewer_session=${sessionToken}; Path=${cookiePath}; Max-Age=${sessionSeconds}; Secure; HttpOnly; SameSite=Lax`
+  await audit(env, workspaceId, null, 'reviewer.invitation.redeemed', 'reviewer_invitation', invitation.id, { eventId, email: invitation.reviewer_email, expiresAt: sessionExpiresAt }, requestId)
+  return json({ data: { redeemed: true, eventId, reviewer: { email: invitation.reviewer_email, name: invitation.reviewer_name }, expiresAt: sessionExpiresAt } }, 200, request, env, requestId, { 'Set-Cookie': cookie })
 }
 
 async function publicCfp(request, env, requestId, workspaceId, eventSlug) {
@@ -1117,7 +1282,7 @@ async function workspaceSession(request, env, requestId, workspaceId) {
 }
 
 async function reviewerQueue(request, env, requestId, workspaceId, eventId) {
-  const access = await identityAndMembership(request, env, workspaceId, 'reviewer')
+  const access = await reviewerIdentityForEvent(request, env, workspaceId, eventId)
   if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET' })
   const loaded = await loadedEventState(env, workspaceId, eventId)
   const assignments = (Array.isArray(loaded.state.evaluationAssignments) ? loaded.state.evaluationAssignments : []).filter((assignment) => assignmentReviewerEmail(assignment) === access.user.email)
@@ -1135,7 +1300,7 @@ async function reviewerQueue(request, env, requestId, workspaceId, eventId) {
   const visibleRounds = rounds.filter((round) => roundIds.has(round.id)).map(({ id: roundId, planId, name, rubric, instructions, status, opensAt, dueAt, blind }) => ({ id: roundId, planId, name, rubric, instructions, status, opensAt, dueAt, blind }))
   const planIds = new Set([...assignments.map((assignment) => assignment.planId), ...visibleRounds.map((round) => round.planId)].filter(Boolean))
   const plans = (Array.isArray(loaded.state.evaluationPlans) ? loaded.state.evaluationPlans : []).filter((plan) => planIds.has(plan.id)).map(({ id: planId, name, label }) => ({ id: planId, name, label }))
-  return json({ data: { revision: loaded.row.revision, event: loaded.state.event, assignments, rounds: visibleRounds, plans, submissions, speakers, reviews } }, 200, request, env, requestId, { ETag: `"${loaded.row.revision}"` })
+  return json({ data: { revision: loaded.row.revision, reviewer: access.user, event: loaded.state.event, assignments, rounds: visibleRounds, plans, submissions, speakers, reviews } }, 200, request, env, requestId, { ETag: `"${loaded.row.revision}"` })
 }
 
 async function members(request, env, requestId, workspaceId, memberUserId) {
@@ -1461,6 +1626,77 @@ async function integrationStatus(request, env, requestId, workspaceId, eventId) 
   const deliveries = await env.DB.prepare(`SELECT id,run_id,idempotency_key,recipient_speaker_id,recipient_email,subject,provider_message_id,status,error_message,created_at,updated_at FROM message_deliveries WHERE workspace_id=? AND event_id=? ORDER BY created_at DESC LIMIT 250`).bind(workspaceId, eventId).all()
   const mappings = await env.DB.prepare(`SELECT object_type,local_id,remote_id,updated_at FROM integration_object_mappings WHERE workspace_id=? AND event_id=? AND provider='accelevents' ORDER BY object_type,local_id LIMIT 1000`).bind(workspaceId, eventId).all()
   return json({ data: { configured: { resend: Boolean(env.RESEND_API_KEY && env.EMAIL_FROM), accelevents: Boolean(env.ACCELEVENTS_API_KEY && env.ACCELEVENTS_EVENT_URL) }, runs: (runs.results || []).map((run) => ({ ...run, response: parseJsonColumn(run.response_json, {}), response_json: undefined })), deliveries: deliveries.results || [], mappings: mappings.results || [] } }, 200, request, env, requestId)
+}
+
+async function sendDeliverableReminders(request, env, requestId, workspaceId, eventId) {
+  const access = await identityAndMembership(request, env, workspaceId, 'organizer')
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM) throw new ApiError(503, 'PROVIDER_NOT_CONFIGURED', 'Configure RESEND_API_KEY and EMAIL_FROM to send deliverable reminders.', { provider: 'resend' })
+  const body = await jsonBody(request, 100_000)
+  const key = idempotencyKey(body.idempotencyKey)
+  if (!Array.isArray(body.taskIds) || body.taskIds.length < 1 || body.taskIds.length > 500 || !body.taskIds.every(validId)) throw new ApiError(422, 'VALIDATION_ERROR', 'taskIds must contain 1–500 valid task identifiers.', { field: 'taskIds' })
+  const requestedTaskIds = [...new Set(body.taskIds)]
+  const note = body.note === undefined ? '' : requiredString(body.note, 'note', 1, 2_000)
+  const includeCalendar = body.includeCalendar === true
+  const loaded = await loadedEventState(env, workspaceId, eventId)
+  const tasksById = new Map((loaded.state.tasks || []).map((task) => [task.id, task]))
+  const speakersById = new Map((loaded.state.speakers || []).map((speaker) => [speaker.id, speaker]))
+  const grouped = new Map()
+  for (const [index, taskId] of requestedTaskIds.entries()) {
+    const task = tasksById.get(taskId)
+    if (!task) throw new ApiError(422, 'UNKNOWN_TASK', 'Every task must belong to this event.', { field: `taskIds.${index}`, taskId })
+    if (task.completedAt) throw new ApiError(422, 'TASK_ALREADY_COMPLETE', 'Completed deliverables cannot receive reminders.', { field: `taskIds.${index}`, taskId })
+    const speaker = speakersById.get(task.speakerId)
+    if (!speaker || !validEmail(speaker.email) || speaker.status === 'declined') throw new ApiError(422, 'UNKNOWN_RECIPIENT', 'Every task must reference an active event speaker with a valid email.', { field: `taskIds.${index}`, taskId })
+    const current = grouped.get(speaker.id) || { speaker, tasks: [] }
+    current.tasks.push(task)
+    grouped.set(speaker.id, current)
+  }
+  const recipients = [...grouped.values()].sort((left, right) => left.speaker.id.localeCompare(right.speaker.id))
+  const fingerprint = await durableKey(JSON.stringify({ taskIds: [...requestedTaskIds].sort(), note, includeCalendar }))
+  const claim = await claimIntegrationRun(env, { workspaceId, eventId, provider: 'resend', action: 'deliverables.remind', key, userId: access.user.id, requestSummary: { fingerprint, taskCount: requestedTaskIds.length, recipientCount: recipients.length, taskIds: requestedTaskIds } })
+  if (claim.mode === 'replay') return json({ data: { runId: claim.run.id, status: claim.run.status, replayed: true, result: parseJsonColumn(claim.run.response_json, {}), errorCode: claim.run.error_code, errorMessage: claim.run.error_message } }, 200, request, env, requestId)
+  if (claim.mode === 'in-progress') throw new ApiError(409, 'INTEGRATION_IN_PROGRESS', 'A request with this idempotency key is already running.', { runId: claim.run.id }, { 'Retry-After': '5' })
+  const results = []
+  const createdAt = now()
+  for (const recipient of recipients) {
+    await renewIntegrationLease(env, claim.run.id, claim.leaseToken)
+    const deliveryKey = `${key}:${recipient.speaker.id}`
+    const subject = `${loaded.state.event.name}: ${recipient.tasks.length} outstanding deliverable${recipient.tasks.length === 1 ? '' : 's'}`
+    const taskLines = recipient.tasks.map((task) => `- ${task.title} (due ${new Date(task.dueAt).toISOString().slice(0, 10)})`).join('\n')
+    const text = `Hi ${recipient.speaker.firstName || recipient.speaker.email},\n\nPlease complete the following speaker deliverable${recipient.tasks.length === 1 ? '' : 's'} for ${loaded.state.event.name}:\n\n${taskLines}${note ? `\n\nMessage from the program team:\n${note}` : ''}\n\nOpen your speaker portal to upload or update the requested items.`
+    const invitation = includeCalendar ? speakerCalendarInvite(loaded.state, recipient.speaker, env.EMAIL_FROM) : null
+    const attachment = resendCalendarAttachment(invitation, `${loaded.state.event.slug}-${recipient.speaker.id}.ics`)
+    const candidateDeliveryId = id('delivery')
+    await env.DB.prepare(`INSERT OR IGNORE INTO message_deliveries (id,run_id,workspace_id,event_id,idempotency_key,recipient_speaker_id,recipient_email,subject,status,requested_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?, 'queued',?,?,?)`).bind(candidateDeliveryId, claim.run.id, workspaceId, eventId, deliveryKey, recipient.speaker.id, recipient.speaker.email.toLowerCase(), subject, access.user.id, createdAt, createdAt).run()
+    const delivery = await env.DB.prepare(`SELECT id,status,provider_message_id,error_message FROM message_deliveries WHERE workspace_id=? AND event_id=? AND idempotency_key=? AND recipient_email=?`).bind(workspaceId, eventId, deliveryKey, recipient.speaker.email.toLowerCase()).first()
+    if (!delivery) throw new ApiError(500, 'DELIVERY_RECORD_MISSING', 'The durable delivery record could not be loaded.')
+    if (delivery.status === 'sent' || delivery.status === 'failed') {
+      results.push({ speakerId: recipient.speaker.id, taskIds: recipient.tasks.map((task) => task.id), deliveryId: delivery.id, status: delivery.status, providerMessageId: delivery.provider_message_id, error: delivery.error_message, calendarAttached: Boolean(attachment) })
+      continue
+    }
+    try {
+      const response = await fetchWithTimeout('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', 'Idempotency-Key': deliveryKey },
+        body: JSON.stringify({ from: env.EMAIL_FROM, to: [recipient.speaker.email], subject, text, attachments: attachment ? [attachment] : undefined }),
+      }, env)
+      const provider = await providerPayload(response)
+      if (!response.ok) throw new Error(provider.message || `Resend returned HTTP ${response.status}`)
+      await env.DB.prepare(`UPDATE message_deliveries SET status='sent',provider_message_id=?,error_message=NULL,updated_at=? WHERE id=? AND EXISTS (SELECT 1 FROM integration_leases WHERE run_id=? AND lease_token=?)`).bind(provider.id || null, now(), delivery.id, claim.run.id, claim.leaseToken).run()
+      results.push({ speakerId: recipient.speaker.id, taskIds: recipient.tasks.map((task) => task.id), deliveryId: delivery.id, status: 'sent', providerMessageId: provider.id, calendarAttached: Boolean(attachment) })
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message.slice(0, 1000) : 'Deliverable reminder delivery failed.'
+      await env.DB.prepare(`UPDATE message_deliveries SET status='failed',error_message=?,updated_at=? WHERE id=? AND EXISTS (SELECT 1 FROM integration_leases WHERE run_id=? AND lease_token=?)`).bind(errorMessage, now(), delivery.id, claim.run.id, claim.leaseToken).run()
+      results.push({ speakerId: recipient.speaker.id, taskIds: recipient.tasks.map((task) => task.id), deliveryId: delivery.id, status: 'failed', error: errorMessage, calendarAttached: Boolean(attachment) })
+    }
+  }
+  const sent = results.filter((result) => result.status === 'sent').length
+  const status = sent === results.length ? 'sent' : sent === 0 ? 'failed' : 'partial'
+  const resultPayload = { requestedTasks: requestedTaskIds.length, recipients: results.length, sent, failed: results.length - sent, deliveries: results }
+  await finishIntegrationRun(env, claim.run.id, claim.leaseToken, status, resultPayload, status === 'sent' ? null : 'DELIVERY_FAILED', status === 'sent' ? null : 'One or more deliverable reminders failed.')
+  await audit(env, workspaceId, access.user.id, 'deliverables.reminders.completed', 'event', eventId, { runId: claim.run.id, status, taskCount: requestedTaskIds.length, sent, failed: results.length - sent }, requestId)
+  return json({ data: { runId: claim.run.id, status, replayed: false, result: resultPayload } }, status === 'failed' ? 502 : status === 'partial' ? 207 : 200, request, env, requestId)
 }
 
 async function sendEmailIntegration(request, env, requestId, workspaceId, eventId) {
@@ -1813,7 +2049,7 @@ function assignmentReviewerEmail(assignment) {
 }
 
 async function reviewerMutation(request, env, requestId, workspaceId, eventId) {
-  const access = await identityAndMembership(request, env, workspaceId, 'reviewer')
+  const access = await reviewerIdentityForEvent(request, env, workspaceId, eventId)
   if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
   const body = await jsonBody(request, 100_000)
   const loaded = await loadedEventState(env, workspaceId, eventId)
@@ -2402,6 +2638,8 @@ async function routeApi(request, env, requestId) {
 
   let match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)\/claim$/)
   if (match) return publicCfpClaim(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/public\/reviewer-invitations\/([^/]+)\/([^/]+)$/)
+  if (match) return redeemReviewerInvitation(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)$/)
   if (match) return publicCfp(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/public\/events\/([^/]+)\/([^/]+)\/(?:feeds\/program|feed)\.(json|xml|ics|ical)$/)
@@ -2430,6 +2668,10 @@ async function routeApi(request, env, requestId) {
   if (match) return eventState(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/reviewer-queue$/)
   if (match) return reviewerQueue(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/reviewer-invitations$/)
+  if (match) return reviewerInvitations(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/speaker-invitations$/)
+  if (match) return speakerInvitations(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/speaker-portal\/submissions(?:\/([^/]+))?$/)
   if (match) return speakerProposalMutation(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3] ? decodeURIComponent(match[3]) : undefined)
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/speaker-portal$/)
@@ -2440,6 +2682,8 @@ async function routeApi(request, env, requestId) {
   if (match) return integrationStatus(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/integrations\/email\/send$/)
   if (match) return sendEmailIntegration(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/deliverables\/reminders$/)
+  if (match) return sendDeliverableReminders(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/integrations\/accelevents\/sync$/)
   if (match) return syncAccelevents(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events\/([^/]+)\/reminders(?:\/(run))?$/)

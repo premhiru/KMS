@@ -18,6 +18,7 @@ Successful claim redemption sets `openspeaker_cfp_claim=<opaque>` with `Secure; 
 
 Program feeds are anonymous, expose only accepted submissions attached to published sessions and their confirmed public speakers, omit emails/reviews/tasks/source payloads, support exact `track`, `format`, and `room` query filters, and send `Access-Control-Allow-Origin: *`, a five-minute public cache with stale revalidation, revision-derived ETags, and `304 Not Modified` handling.
 - `GET /api/public/events/:workspaceId/:eventSlug/speakers/:speakerId/headshot` returns an inline, short-cache image only when that public speaker's headshot task remains completed and approved and its event-scoped R2 asset is JPEG, PNG, or WebP.
+- `GET /api/public/reviewer-invitations/:workspaceId/:eventId?token=...` atomically redeems a short-lived reviewer invitation once. Its `Secure; HttpOnly; SameSite=Lax` cookie is scoped to that event API and authorizes only the assigned reviewer queue and review mutation. Invalid, expired, replayed, removed-assignment, and wrong-event cases do not grant workspace membership.
 
 ## Workspace and state
 
@@ -37,6 +38,8 @@ Only the exact `BOOTSTRAP_OWNER_EMAIL` may initialize a production workspace or 
 
 - `GET .../reviewer-queue` returns only assignments matching the authenticated email. Blind rounds redact speaker/source data.
 - `POST .../reviews` accepts only the reviewer's assigned submission with optimistic revision control.
+- `POST .../reviewer-invitations` is organizer-only and accepts `{ email, name?, returnUrl }`. The email must already have an event assignment and `returnUrl` must be same-origin. Resend delivers a one-time, event-scoped queue link; issuance is actor/email/event rate limited and delivery is audited.
+- `POST .../speaker-invitations` is organizer-only and accepts `{ speakerId, returnUrl }`. It sends a manually added active speaker a one-time event-scoped portal link using the same narrowly scoped claim session as proposal access.
 - Review bodies may include `{ scores, answers, note }`. Numeric `rating` criteria remain in `scores`; `select` and `text` values are stored in `answers`. Required fields, score ranges, configured dropdown options, and text length are enforced from the assigned round's rubric.
 - `GET|PATCH .../speaker-portal` requires a hosting email matching a speaker in that event. It returns/updates only that speaker, their submissions/tasks/sessions/assets, and approved resource pages/files.
 - Speaker task updates accept `{ id, completed?, assetId?, newComment?: { id, body, createdAt } }`. A newly selected event-owned asset appends an immutable server-built `deliverableVersions` entry without deleting earlier versions. Comment author name/role are derived from the verified speaker identity; duplicate comment IDs replay idempotently and conflicting reuse is rejected.
@@ -54,6 +57,7 @@ Successful anonymous CFP submission attempts an idempotent Resend confirmation w
 
 - `GET .../integrations` returns `{ configured, runs, deliveries, mappings }`, including lease attempts and native Accelevents object mappings.
 - `POST .../integrations/email/send` accepts `{ idempotencyKey, replyTo?, messages: [{ speakerId, subject, text?, html?, attachment? }] }`. Resend recipients come from event speakers. An attachment request `{ filename, type: "text/calendar" }` is regenerated server-side from only that speaker's published accepted sessions as an RFC 5545 `METHOD:REQUEST`; applicant/client calendar content is never trusted. Due reminders receive the same scoped invite when sessions exist. Durable recipient rows plus provider keys make recovery resumable.
+- `POST .../deliverables/reminders` accepts `{ idempotencyKey, taskIds, note?, includeCalendar? }`. It rejects completed or cross-event tasks, groups outstanding tasks into one personalized email per event speaker, records a durable delivery row per recipient, and returns exact sent/failed receipts. Calendar data is omitted by default and, when requested, regenerated only for applicable published sessions owned by that recipient.
 - `POST .../integrations/accelevents/sync` accepts `{ idempotencyKey }`. It consumes `state.event.accelevents`, then calls the native host API using the `Key` header and event URL. Speakers are created/updated first; durable remote IDs are attached to created/updated sessions.
 
 Active integrations hold renewable leases. A concurrent duplicate returns `409 INTEGRATION_IN_PROGRESS`; an expired lease can be claimed; terminal retries replay the stored result. Provider calls time out.
@@ -82,6 +86,7 @@ The outbound Airtable table defaults to `Speaker CRM Contacts` (`AIRTABLE_TABLE_
 - Core: `DB`, `FILES`, `ALLOWED_ORIGINS`, `ALLOW_LOCAL_AUTH`, canonical `BOOTSTRAP_OWNER_EMAIL`, optional informational `BOOTSTRAP_OWNER_ID`.
 - CFP: `CFP_RATE_LIMIT`, `CFP_RATE_WINDOW_SECONDS`.
 - CFP proposal access: `CFP_CLAIM_RATE_LIMIT` (default 5), `CFP_CLAIM_RATE_WINDOW_SECONDS` (default 900), `CFP_CLAIM_TOKEN_SECONDS` (default 900, bounded 300–3600), `CFP_CLAIM_SESSION_SECONDS` (default 604800, bounded 3600–2592000). Claim email requires `RESEND_API_KEY` and `EMAIL_FROM`; responses remain generic when the provider is absent or fails.
+- Invitations: `REVIEWER_INVITE_RATE_LIMIT` (default 10), `REVIEWER_INVITE_RATE_WINDOW_SECONDS` (default 900), `REVIEWER_INVITE_TOKEN_SECONDS` (default 172800), `REVIEWER_INVITE_SESSION_SECONDS` (default 604800), and `SPEAKER_INVITE_TOKEN_SECONDS` (default 172800). Raw link/session tokens are never stored; links are one-time and event scoped.
 - Assets: `MAX_ASSET_BYTES` (10 MB), `MAX_USER_EVENT_ASSET_BYTES` (50 MB), `MAX_EVENT_ASSET_BYTES` (250 MB), `MAX_EVENT_ASSET_COUNT` (2000), `ALLOWED_ASSET_TYPES`.
 - Email: `RESEND_API_KEY`, `EMAIL_FROM`.
 - Accelevents: `ACCELEVENTS_API_KEY`, `ACCELEVENTS_EVENT_URL` (slug), optional HTTPS `ACCELEVENTS_API_BASE_URL` (defaults to `https://api.accelevents.com`).

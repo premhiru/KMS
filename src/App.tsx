@@ -8,6 +8,7 @@ import {
   Files,
   FileText,
   Globe2,
+  History,
   LayoutDashboard,
   Menu,
   MessageSquareText,
@@ -33,6 +34,7 @@ import { CrmWorkspace } from './features/crm'
 import { Dashboard } from './features/dashboard/Dashboard'
 import { DeliverablesWorkspace } from './features/deliverables'
 import { EmbedManager } from './features/embeds'
+import { ContentHistory } from './features/history'
 import { SpeakerPortal } from './features/portal'
 import { PublicEvent } from './features/public-event'
 import { EventSettings } from './features/settings/EventSettings'
@@ -63,6 +65,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     { route: 'deliverables', label: 'Deliverables', icon: Files },
     { route: 'agenda', label: 'Agenda', icon: CalendarDays },
     { route: 'communications', label: 'Communications', icon: MessageSquareText },
+    { route: 'history', label: 'Content history', icon: History },
   ] },
   { label: 'Organization', items: [
     { route: 'crm', label: 'Speaker CRM', icon: ContactRound },
@@ -86,6 +89,7 @@ const routeTitles: Record<AppRoute, string> = {
   deliverables: 'Deliverables',
   agenda: 'Agenda builder',
   communications: 'Communications',
+  history: 'Content history',
   embeds: 'Embeds & widgets',
   portal: 'Speaker portal',
   event: 'Public event',
@@ -287,6 +291,7 @@ export default function App() {
         {route === 'deliverables' && <DeliverablesWorkspace />}
         {route === 'agenda' && <AgendaBuilder />}
         {route === 'communications' && <CommunicationsCenter />}
+        {route === 'history' && <ContentHistory />}
         {route === 'embeds' && <EmbedManager />}
         {route === 'portal' && <SpeakerPortal />}
         {route === 'settings' && <EventSettings />}

@@ -24,6 +24,10 @@ import type {
   StateRollbackReceipt,
   SubmissionStatusReceipt,
   SendEmailReceipt,
+  DeliverableReminderReceipt,
+  ReviewerInvitationReceipt,
+  ReviewerInvitationRedemption,
+  SpeakerInvitationReceipt,
   UploadedAsset,
   VersionedAppState,
   VersionedSpeakerPortal,
@@ -487,6 +491,54 @@ export function parseSendEmailReceipt(value: unknown): SendEmailReceipt {
   })
 }
 
+export function parseDeliverableReminderReceipt(value: unknown): DeliverableReminderReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['deliverable reminder receipt data must be an object.'])
+  if (!runStatuses.includes(data.status as IntegrationRunStatus)) issues.push('status is invalid.')
+  if (typeof data.replayed !== 'boolean') issues.push('replayed must be a boolean.')
+  if (!isRecord(data.result)) issues.push('result must be an object.')
+  const result = isRecord(data.result) ? data.result : {}
+  for (const field of ['requestedTasks', 'recipients', 'sent', 'failed']) numberField(result, field, issues)
+  if (!Array.isArray(result.deliveries)) issues.push('result.deliveries must be an array.')
+  return finish(issues, {
+    runId: stringField(data, 'runId', issues), status: data.status as IntegrationRunStatus, replayed: data.replayed === true,
+    result: result as unknown as DeliverableReminderReceipt['result'],
+  })
+}
+
+export function parseReviewerInvitationReceipt(value: unknown): ReviewerInvitationReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['reviewer invitation receipt data must be an object.'])
+  if (data.status !== 'sent' && data.status !== 'failed') issues.push('status is invalid.')
+  return finish(issues, {
+    invitationId: stringField(data, 'invitationId', issues), email: stringField(data, 'email', issues), status: data.status as ReviewerInvitationReceipt['status'],
+    providerMessageId: optionalString(data, 'providerMessageId', issues), errorMessage: optionalString(data, 'errorMessage', issues), expiresAt: stringField(data, 'expiresAt', issues), assignmentCount: numberField(data, 'assignmentCount', issues),
+  })
+}
+
+export function parseReviewerInvitationRedemption(value: unknown): ReviewerInvitationRedemption {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['reviewer invitation redemption data must be an object.'])
+  if (data.redeemed !== true) issues.push('redeemed must be true.')
+  if (!isRecord(data.reviewer)) issues.push('reviewer must be an object.')
+  const reviewer = isRecord(data.reviewer) ? { email: stringField(data.reviewer, 'email', issues), name: stringField(data.reviewer, 'name', issues, true) } : { email: '', name: '' }
+  return finish(issues, { redeemed: true, eventId: stringField(data, 'eventId', issues), reviewer, expiresAt: stringField(data, 'expiresAt', issues) })
+}
+
+export function parseSpeakerInvitationReceipt(value: unknown): SpeakerInvitationReceipt {
+  const data = unwrapData(value)
+  const issues: string[] = []
+  if (!isRecord(data)) throw new ResponseValidationError(['speaker invitation receipt data must be an object.'])
+  if (data.status !== 'sent' && data.status !== 'failed') issues.push('status is invalid.')
+  return finish(issues, {
+    invitationId: stringField(data, 'invitationId', issues), speakerId: stringField(data, 'speakerId', issues), email: stringField(data, 'email', issues), status: data.status as SpeakerInvitationReceipt['status'],
+    providerMessageId: optionalString(data, 'providerMessageId', issues), errorMessage: optionalString(data, 'errorMessage', issues), expiresAt: stringField(data, 'expiresAt', issues),
+  })
+}
+
 export function parseAcceleventsReceipt(value: unknown): AcceleventsSyncReceipt {
   const data = unwrapData(value)
   const issues: string[] = []
@@ -583,6 +635,8 @@ export function parseReviewerQueue(value: unknown, etag?: string | null): Review
   const etagRevision = etag?.replace(/^W\//, '').replace(/^"|"$/g, '')
   if (etagRevision !== undefined && etagRevision !== String(revision)) issues.push('ETag and body revision must match.')
   if (!isRecord(data.event)) issues.push('event must be an object.')
+  if (data.reviewer !== undefined && !isRecord(data.reviewer)) issues.push('reviewer must be an object when present.')
+  const reviewer = isRecord(data.reviewer) ? { id: stringField(data.reviewer, 'id', issues), email: stringField(data.reviewer, 'email', issues), name: stringField(data.reviewer, 'name', issues, true) } : undefined
   for (const collection of ['assignments', 'rounds', 'plans', 'submissions', 'speakers', 'reviews']) if (!Array.isArray(data[collection])) issues.push(`${collection} must be an array.`)
   if (isRecord(data.event)) {
     for (const field of ['id', 'name', 'slug', 'venue', 'timezone', 'startAt', 'endAt']) stringField(data.event, field, issues)
@@ -607,7 +661,7 @@ export function parseReviewerQueue(value: unknown, etag?: string | null): Review
     }
   })
   return finish(issues, {
-    revision, event: data.event as ReviewerQueue['event'], assignments: data.assignments as ReviewerQueue['assignments'],
+    revision, reviewer, event: data.event as ReviewerQueue['event'], assignments: data.assignments as ReviewerQueue['assignments'],
     rounds: data.rounds as ReviewerQueue['rounds'], plans: data.plans as ReviewerQueue['plans'], submissions: data.submissions as ReviewerQueue['submissions'],
     speakers: data.speakers as ReviewerQueue['speakers'], reviews: data.reviews as ReviewerQueue['reviews'],
   })

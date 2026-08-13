@@ -19,12 +19,14 @@ export interface OrganizerSubmissionsProps {
 }
 
 export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: OrganizerSubmissionsProps) {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, api, persistenceMode } = useApp()
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'all' | SubmissionStatus>('all')
   const [track, setTrack] = useState('all')
   const submitted = useMemo(() => state.submissions.filter((submission) => submission.lifecycle !== 'draft'), [state.submissions])
   const [selectedId, setSelectedId] = useState<Id | undefined>(initialSelectedId ?? submitted[0]?.id)
+  const [notice, setNotice] = useState('')
+  const [notifying, setNotifying] = useState(false)
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -40,9 +42,27 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
   const selected = submitted.find((submission) => submission.id === selectedId)
   const reviewCount = state.reviews.filter((review) => review.submissionId === selected?.id).length
 
-  function decide(nextStatus: SubmissionStatus) {
+  async function decide(nextStatus: SubmissionStatus) {
     if (!selected) return
     dispatch({ type: 'submission/decide', id: selected.id, status: nextStatus, at: new Date().toISOString() })
+    if (!['accepted', 'waitlisted', 'declined'].includes(nextStatus)) { setNotice('Proposal returned to review.'); return }
+    if (!api || persistenceMode !== 'remote') { setNotice(`${statusLabels[nextStatus]} decision saved locally; email notification requires the deployed application.`); return }
+    const recipients = selectSubmissionSpeakers(state, selected.id)
+    if (!recipients.length) { setNotice(`${statusLabels[nextStatus]} decision saved, but the proposal has no speaker recipient.`); return }
+    setNotifying(true)
+    try {
+      const messages = recipients.map((speaker) => ({
+        speakerId: speaker.id,
+        subject: `${state.event.name}: ${statusLabels[nextStatus]} — ${selected.title}`,
+        text: `Hi ${speaker.firstName},\n\nYour proposal “${selected.title}” for ${state.event.name} is ${statusLabels[nextStatus].toLowerCase()}.\n\nOpen your private speaker portal for the latest proposal status and next steps.`,
+      }))
+      const receipt = await api.sendEmail({ idempotencyKey: `decision-${selected.id}-${nextStatus}`, messages })
+      setNotice(`${statusLabels[nextStatus]} decision saved and ${receipt.result.sent ?? 0} notification email${receipt.result.sent === 1 ? '' : 's'} sent${receipt.result.failed ? `; ${receipt.result.failed} failed` : ''}.`)
+    } catch (error) {
+      setNotice(`${statusLabels[nextStatus]} decision saved, but notification failed: ${error instanceof Error ? error.message : 'provider error'}`)
+    } finally {
+      setNotifying(false)
+    }
   }
 
   return (
@@ -58,6 +78,7 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
           <span><strong>{submitted.length}</strong> total</span>
         </div>
       </header>
+      {notice && <p className="sb-form-notice" role="status">{notice}</p>}
 
       <div className="sb-toolbar" aria-label="Submission filters">
         <label className="sb-search">
@@ -125,7 +146,8 @@ export function OrganizerSubmissions({ initialSelectedId, onOpenReview }: Organi
                 dispatch({ type: 'submission/delete', id: selected.id, at: new Date().toISOString() })
                 setSelectedId(submitted.find((item) => item.id !== selected.id)?.id)
               }}
-              onDecide={decide}
+              onDecide={(nextStatus) => void decide(nextStatus)}
+              notifying={notifying}
               onOpenReview={onOpenReview ? () => onOpenReview(selected.id) : undefined}
             />
           )}
@@ -144,10 +166,11 @@ interface SubmissionEditorProps {
   onSave: (patch: Partial<Omit<Submission, 'id' | 'createdAt'>>) => void
   onDelete: () => void
   onDecide: (status: SubmissionStatus) => void
+  notifying: boolean
   onOpenReview?: () => void
 }
 
-function SubmissionEditor({ submission, tracks, speakers, reviewCount, score, onSave, onDelete, onDecide, onOpenReview }: SubmissionEditorProps) {
+function SubmissionEditor({ submission, tracks, speakers, reviewCount, score, onSave, onDelete, onDecide, onOpenReview, notifying }: SubmissionEditorProps) {
   const [title, setTitle] = useState(submission.title)
   const [abstract, setAbstract] = useState(submission.abstract)
   const [track, setTrack] = useState(submission.track)
@@ -187,8 +210,8 @@ function SubmissionEditor({ submission, tracks, speakers, reviewCount, score, on
 
       <div className="sb-speaker-chips" aria-label="Speakers">
         <Users aria-hidden="true" />
-        {speakers.length === 0 ? <span>No speakers attached</span> : speakers.map((speaker) => (
-          <span key={speaker.id}>{speaker.firstName} {speaker.lastName} <small>{speaker.email}</small></span>
+        {speakers.length === 0 ? <span>No speakers attached</span> : speakers.map((speaker, index) => (
+          <span key={speaker.id}>{speaker.firstName} {speaker.lastName} <small>{index === 0 ? 'Primary speaker' : 'Co-speaker'} · {speaker.email}</small></span>
         ))}
       </div>
 
@@ -212,9 +235,9 @@ function SubmissionEditor({ submission, tracks, speakers, reviewCount, score, on
       <section className="sb-decision" aria-labelledby={`decision-${submission.id}`}>
         <div><p className="sb-eyebrow">Committee decision</p><h3 id={`decision-${submission.id}`}>Move proposal</h3></div>
         <div className="sb-decision__buttons">
-          <button type="button" className="sb-button sb-button--success" onClick={() => onDecide('accepted')}>Accept</button>
-          <button type="button" className="sb-button sb-button--warning" onClick={() => onDecide('waitlisted')}>Waitlist</button>
-          <button type="button" className="sb-button sb-button--danger" onClick={() => onDecide('declined')}>Decline</button>
+          <button disabled={notifying} type="button" className="sb-button sb-button--success" onClick={() => onDecide('accepted')}>Accept + notify</button>
+          <button disabled={notifying} type="button" className="sb-button sb-button--warning" onClick={() => onDecide('waitlisted')}>Waitlist + notify</button>
+          <button disabled={notifying} type="button" className="sb-button sb-button--danger" onClick={() => onDecide('declined')}>Decline + notify</button>
           <button type="button" className="sb-button" onClick={() => onDecide('in-review')}>Return to review</button>
         </div>
       </section>

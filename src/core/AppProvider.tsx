@@ -145,6 +145,32 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
           return
         }
 
+        // Event-scoped reviewer invitations deliberately do not grant workspace
+        // membership. Redeem a one-time token, then probe only the reviewer queue.
+        const reviewerToken = new URLSearchParams(window.location.search).get('reviewerToken')
+        if (reviewerToken) {
+          await api.verifyReviewerInvitation(reviewerToken, { signal: controller.signal })
+          const clean = new URL(window.location.href)
+          clean.searchParams.delete('reviewerToken')
+          window.history.replaceState({}, '', clean)
+          const queue = await api.getReviewerQueue({ signal: controller.signal })
+          const reviewer = queue.reviewer ?? { id: '', email: queue.assignments[0]?.reviewerEmail ?? '', name: queue.assignments[0]?.reviewerName ?? '' }
+          setSession({ user: reviewer, role: 'reviewer' })
+          acceptLoaded(queueToState(queue), queue.revision)
+          return
+        }
+        if (!identity) {
+          try {
+            const queue = await api.getReviewerQueue({ signal: controller.signal })
+            const reviewer = queue.reviewer ?? { id: '', email: queue.assignments[0]?.reviewerEmail ?? '', name: queue.assignments[0]?.reviewerName ?? '' }
+            setSession({ user: reviewer, role: 'reviewer' })
+            acceptLoaded(queueToState(queue), queue.revision)
+            return
+          } catch (error) {
+            if (!(error instanceof ApiError) || (error.status !== 401 && error.status !== 403)) throw error
+          }
+        }
+
         const portal = await api.getSpeakerPortal({ signal: controller.signal })
         const speakerSession = identity ?? { user: { id: '', email: portal.portal.speaker.email, name: `${portal.portal.speaker.firstName} ${portal.portal.speaker.lastName}` }, role: 'speaker' as const }
         setSession(speakerSession)

@@ -8,3 +8,5 @@
 .spk-page-head p:not(.spk-kicker),.spk-summary span,.spk-section-heading>span,.spk-empty{color:#625e6c}
 .spk-result-count,.spk-person-copy small,.spk-task-list small{color:#5f5b6b}
 .spk-status-confirmed{color:#126b5d}
+.spk-headshot-editor{align-items:center;background:#f8f7fb;border:1px solid #e5e2ed;border-radius:11px;display:flex;gap:14px;margin:18px 0;padding:13px}.spk-headshot-preview{align-items:center;background:#6759d6;border-radius:10px;color:#fff;display:flex;flex:0 0 82px;font-weight:800;height:82px;justify-content:center;overflow:hidden}.spk-headshot-preview img{height:100%;object-fit:cover;width:100%}.spk-headshot-editor>div:last-child{align-items:flex-start;display:flex;flex-direction:column;gap:5px}.spk-headshot-editor h3,.spk-headshot-editor p{margin:0}.spk-headshot-editor p,.spk-headshot-editor small{color:#5f5b6b;font-size:10px}.spk-headshot-editor label{cursor:pointer;margin-top:4px}
+@media(max-width:560px){.spk-headshot-editor{align-items:flex-start;flex-direction:column}.spk-headshot-preview{height:104px;width:104px}}

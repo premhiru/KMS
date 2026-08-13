@@ -75,6 +75,22 @@ describe('operational Worker routes', () => {
     })
   })
 
+  it('uses typed production routes for deliverable reminders and reviewer/speaker invitations', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ data: { runId: 'run-deliverables', status: 'sent', replayed: false, result: { requestedTasks: 2, recipients: 1, sent: 1, failed: 0, deliveries: [{ speakerId: 'speaker-1', taskIds: ['task-1', 'task-2'], deliveryId: 'delivery-1', status: 'sent', calendarAttached: false }] } } }))
+      .mockResolvedValueOnce(json({ data: { invitationId: 'reviewer-invite-1', email: 'reviewer@example.com', status: 'sent', providerMessageId: 'resend-1', expiresAt: '2026-08-13T00:00:00Z', assignmentCount: 2 } }, { status: 201 }))
+      .mockResolvedValueOnce(json({ data: { invitationId: 'speaker-invite-1', speakerId: 'speaker-1', email: 'speaker@example.com', status: 'sent', providerMessageId: 'resend-2', expiresAt: '2026-08-13T00:00:00Z' } }, { status: 201 }))
+    const api = client(fetcher)
+    await expect(api.sendDeliverableReminders({ idempotencyKey: 'deliverables-001', taskIds: ['task-1', 'task-2'] })).resolves.toMatchObject({ result: { sent: 1, deliveries: [{ calendarAttached: false }] } })
+    await expect(api.inviteReviewer({ email: 'reviewer@example.com', returnUrl: 'https://app.example.test/#/reviews', purpose: 'reminder', roundId: 'round-1' })).resolves.toMatchObject({ status: 'sent', assignmentCount: 2 })
+    await expect(api.inviteSpeaker({ speakerId: 'speaker-1', returnUrl: 'https://app.example.test/#/portal' })).resolves.toMatchObject({ status: 'sent', speakerId: 'speaker-1' })
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.test/api/workspaces/workspace-main/events/event-summit/deliverables/reminders',
+      'https://api.example.test/api/workspaces/workspace-main/events/event-summit/reviewer-invitations',
+      'https://api.example.test/api/workspaces/workspace-main/events/event-summit/speaker-invitations',
+    ])
+  })
+
   it('retains only the approved versioned resource-file contract in the speaker portal projection', async () => {
     const state = createSeedState()
     const portal = {

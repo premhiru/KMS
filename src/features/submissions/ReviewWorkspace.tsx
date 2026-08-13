@@ -205,7 +205,7 @@ function AssignmentReviewEditor({ item, reviews, fallbackReviewerName, onSave, o
         <div className="sb-aggregate"><BarChart3 aria-hidden="true" /><span><strong>{roundAggregate === undefined ? '—' : roundAggregate.toFixed(2)}</strong><small>{item.round.name} / 5</small></span></div>
       </header>
       <div className="sb-round-meta"><span>{item.round.status}</span><span>Due {new Date(item.round.dueAt).toLocaleString()}</span><span>{item.assignment.status}</span></div>
-      {item.blind ? <div className="sb-blind-notice"><EyeOff aria-hidden="true" /><span><strong>Blind review</strong><small>Speaker identity is hidden for this round.</small></span></div> : <div className="sb-review-speakers">{item.speakers.map((speaker) => <span key={speaker.id}><strong>{speaker.firstName} {speaker.lastName}</strong><small>{speaker.jobTitle}{speaker.company ? ` at ${speaker.company}` : ''}</small></span>)}</div>}
+      {item.blind ? <div className="sb-blind-notice"><EyeOff aria-hidden="true" /><span><strong>Blind review</strong><small>Speaker identity is hidden for this round.</small></span></div> : <div className="sb-review-speakers">{item.speakers.map((speaker, index) => <span key={speaker.id}><strong>{speaker.firstName} {speaker.lastName}</strong><small>{index === 0 ? 'Primary speaker' : 'Co-speaker'} · {speaker.jobTitle}{speaker.company ? ` at ${speaker.company}` : ''}</small></span>)}</div>}
       <article className="sb-abstract"><p className="sb-eyebrow">Abstract</p>{item.submission.abstract.split('\n').map((paragraph, index) => <p key={`${paragraph}-${index}`}>{paragraph}</p>)}</article>
       {item.round.instructions && <p className="sb-review-instructions"><strong>Reviewer instructions:</strong> {item.round.instructions}</p>}
 

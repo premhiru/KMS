@@ -22,6 +22,7 @@ import {
   selectRoundAssignments,
   selectRoundResults,
   selectRoundSubmissionScore,
+  selectSubmissionSpeakers,
   useApp,
 } from "../../core";
 import type {
@@ -34,6 +35,7 @@ import type {
   SubmissionStatus,
 } from "../../domain";
 import "./submissions.css";
+import { addReviewerToPool, autoDistributeReviewers } from "./evaluation-pools";
 
 const defaultRubric: RubricCriterion[] = [
   { id: "relevance", label: "Relevance", weight: 35, maxScore: 5 },
@@ -299,9 +301,10 @@ function PlanEditor({
 }
 
 function RoundInsights({ round }: { round: EvaluationRound }) {
-  const { state, dispatch } = useApp();
+  const { state, api, persistenceMode } = useApp();
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
   const [reminderNotice, setReminderNotice] = useState("");
+  const [sendingReminders, setSendingReminders] = useState(false);
   const reviewers = selectReviewerProgress(state, round.id);
   const incompleteReviewers = reviewers.filter(
     (reviewer) => reviewer.completed + reviewer.abstained < reviewer.assigned,
@@ -310,6 +313,21 @@ function RoundInsights({ round }: { round: EvaluationRound }) {
     const score = (left.aggregate ?? -1) - (right.aggregate ?? -1);
     return direction === "asc" ? score : -score;
   });
+  async function remindIncompleteReviewers() {
+    if (!api || persistenceMode !== "remote") {
+      setReminderNotice("Reviewer reminder email is available on the deployed application.");
+      return;
+    }
+    setSendingReminders(true);
+    const returnUrl = new URL(window.location.href);
+    returnUrl.hash = "#/reviews";
+    returnUrl.searchParams.delete("reviewerToken");
+    const receipts = await Promise.allSettled(incompleteReviewers.map((reviewer) => api.inviteReviewer({ name: reviewer.reviewerName, email: reviewer.reviewerEmail, returnUrl: returnUrl.toString(), purpose: "reminder", roundId: round.id })));
+    const sent = receipts.filter((receipt) => receipt.status === "fulfilled" && receipt.value.status === "sent").length;
+    const failed = receipts.length - sent;
+    setReminderNotice(`${sent} reviewer reminder email${sent === 1 ? "" : "s"} sent${failed ? `; ${failed} failed` : ""}.`);
+    setSendingReminders(false);
+  }
   return (
     <div>
       <section
@@ -324,31 +342,10 @@ function RoundInsights({ round }: { round: EvaluationRound }) {
           <button
             className="sb-button"
             type="button"
-            disabled={incompleteReviewers.length === 0}
-            onClick={() => {
-              const at = nowIso();
-              dispatch({
-                type: "communication/log",
-                entry: {
-                  id: createId("communication"),
-                  recipientSpeakerIds: [],
-                  recipientEmails: incompleteReviewers.map(
-                    (reviewer) => reviewer.reviewerEmail,
-                  ),
-                  subject: `${state.event.name}: ${round.name} review reminder`,
-                  body: `Please complete your remaining ${round.name} evaluations by ${new Date(round.dueAt).toLocaleString()}.`,
-                  channel: "in-app-outbox",
-                  status: "queued",
-                  sentAt: at,
-                },
-                at,
-              });
-              setReminderNotice(
-                `Queued reminders for ${incompleteReviewers.length} incomplete reviewer${incompleteReviewers.length === 1 ? "" : "s"}.`,
-              );
-            }}
+            disabled={incompleteReviewers.length === 0 || sendingReminders}
+            onClick={() => void remindIncompleteReviewers()}
           >
-            Remind incomplete reviewers
+            {sendingReminders ? "Sending…" : "Email incomplete reviewers"}
           </button>
         </div>
         {reminderNotice && (
@@ -418,6 +415,14 @@ function RoundInsights({ round }: { round: EvaluationRound }) {
                 <small>
                   {result.submission.track} · {result.submission.format}
                 </small>
+                <small>
+                  {selectSubmissionSpeakers(state, result.submission.id)
+                    .map(
+                      (speaker, index) =>
+                        `${speaker.firstName} ${speaker.lastName} (${index === 0 ? "Primary speaker" : "Co-speaker"})`,
+                    )
+                    .join(" · ")}
+                </small>
               </span>
               <span>
                 {result.reviewCount} completed review
@@ -442,7 +447,7 @@ function RoundEditor({
   round: EvaluationRound;
   onOpenReviewer?: EvaluationPlanManagerProps["onOpenReviewer"];
 }) {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, api, persistenceMode } = useApp();
   const [name, setName] = useState(round.name);
   const [status, setStatus] = useState<EvaluationRoundStatus>(round.status);
   const [opensAt, setOpensAt] = useState(
@@ -458,11 +463,15 @@ function RoundEditor({
   >(round.filter?.submissionStatuses ?? ["needs-review", "in-review"]);
   const [reviewerName, setReviewerName] = useState("");
   const [reviewerEmail, setReviewerEmail] = useState("");
+  const [poolName, setPoolName] = useState("");
+  const [poolEmail, setPoolEmail] = useState("");
   const [selectedSubmissionIds, setSelectedSubmissionIds] = useState<Id[]>([]);
   const [advanceIds, setAdvanceIds] = useState<Id[]>([]);
   const [nextReviewerName, setNextReviewerName] = useState("");
   const [nextReviewerEmail, setNextReviewerEmail] = useState("");
   const [notice, setNotice] = useState("");
+  const [invitingEmail, setInvitingEmail] = useState("");
+  const reviewerPool = round.reviewerPool ?? [];
   const assignments = selectRoundAssignments(state, round.id);
   const progress = selectEvaluationRoundProgress(state, round.id);
   const eligible = useMemo(
@@ -560,6 +569,64 @@ function RoundEditor({
     );
   }
 
+  function addPoolReviewer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!poolName.trim() || !/^\S+@\S+\.\S+$/.test(poolEmail.trim())) return;
+    const nextPool = addReviewerToPool(reviewerPool, {
+      name: poolName,
+      email: poolEmail,
+    });
+    if (nextPool === reviewerPool) {
+      setNotice("That reviewer is already in this round's pool.");
+      return;
+    }
+    const at = nowIso();
+    dispatch({
+      type: "evaluation/round/upsert",
+      round: { ...round, reviewerPool: nextPool, updatedAt: at },
+      at,
+    });
+    setReviewerName(poolName.trim());
+    setReviewerEmail(poolEmail.trim().toLowerCase());
+    setPoolName("");
+    setPoolEmail("");
+    setNotice(`Reviewer added to ${round.name} only.`);
+  }
+
+  function removePoolReviewer(email: string) {
+    const at = nowIso();
+    dispatch({
+      type: "evaluation/round/upsert",
+      round: {
+        ...round,
+        reviewerPool: reviewerPool.filter(
+          (reviewer) => reviewer.email.toLowerCase() !== email.toLowerCase(),
+        ),
+        updatedAt: at,
+      },
+      at,
+    });
+    setNotice(`Reviewer removed from ${round.name}'s pool.`);
+  }
+
+  function autoDistribute() {
+    const at = nowIso();
+    const distributed = autoDistributeReviewers(
+      round.id,
+      eligible,
+      reviewerPool,
+      assignments,
+      at,
+    );
+    for (const assignment of distributed)
+      dispatch({ type: "evaluation/assignment/upsert", assignment, at });
+    setNotice(
+      distributed.length
+        ? `Auto-distributed ${distributed.length} filtered submission${distributed.length === 1 ? "" : "s"} across ${reviewerPool.length} reviewer${reviewerPool.length === 1 ? "" : "s"}.`
+        : "No new filtered assignments were available to distribute.",
+    );
+  }
+
   function advance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
@@ -613,6 +680,25 @@ function RoundEditor({
         ? [...new Set([...items, value])]
         : items.filter((item) => item !== value),
     );
+  }
+
+  async function inviteReviewer(name: string, email: string) {
+    if (!api || persistenceMode !== "remote") {
+      setNotice("Reviewer invitation email is available on the deployed application.");
+      return;
+    }
+    setInvitingEmail(email);
+    try {
+      const returnUrl = new URL(window.location.href);
+      returnUrl.hash = "#/reviews";
+      returnUrl.searchParams.delete("reviewerToken");
+      const receipt = await api.inviteReviewer({ name, email, returnUrl: returnUrl.toString() });
+      setNotice(`Reviewer invitation sent to ${receipt.email} for ${receipt.assignmentCount} assignment${receipt.assignmentCount === 1 ? "" : "s"}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Reviewer invitation delivery failed.");
+    } finally {
+      setInvitingEmail("");
+    }
   }
 
   return (
@@ -913,6 +999,47 @@ function RoundEditor({
         </button>
       </form>
 
+      <section className="sb-assignment-section" aria-labelledby={`reviewer-pool-${round.id}`}>
+        <div className="sb-card__header">
+          <div>
+            <h3 id={`reviewer-pool-${round.id}`}>{round.name} reviewer pool</h3>
+            <p>This pool belongs only to this round. Other rounds keep independent reviewer lists.</p>
+          </div>
+          <button
+            className="sb-button"
+            type="button"
+            disabled={reviewerPool.length === 0 || eligible.length === 0}
+            onClick={autoDistribute}
+          >
+            Auto-distribute filtered submissions
+          </button>
+        </div>
+        <form onSubmit={addPoolReviewer}>
+          <div className="sb-form__row sb-form__row--two">
+            <label>
+              Reviewer name
+              <input required value={poolName} onChange={(event) => setPoolName(event.target.value)} />
+            </label>
+            <label>
+              Reviewer email
+              <input required type="email" value={poolEmail} onChange={(event) => setPoolEmail(event.target.value)} />
+            </label>
+          </div>
+          <button className="sb-button" type="submit"><UserPlus aria-hidden="true" />Add to this round</button>
+        </form>
+        <div className="sb-assignment-table">
+          {reviewerPool.map((reviewer) => (
+            <div key={reviewer.email}>
+              <span><strong>{reviewer.name}</strong><small>{reviewer.email}</small></span>
+              <span>Eligible for {round.name}</span>
+              <button className="sb-button" type="button" onClick={() => { setReviewerName(reviewer.name); setReviewerEmail(reviewer.email); }}>Use for manual assignment</button>
+              <button className="sb-icon-button sb-icon-button--danger" type="button" aria-label={`Remove ${reviewer.name} from ${round.name}`} onClick={() => removePoolReviewer(reviewer.email)}><Trash2 aria-hidden="true" /></button>
+            </div>
+          ))}
+          {reviewerPool.length === 0 && <p className="sb-muted">No reviewers in this round's pool.</p>}
+        </div>
+      </section>
+
       <section className="sb-assignment-section">
         <div className="sb-card__header">
           <div>
@@ -1003,6 +1130,14 @@ function RoundEditor({
                   Open queue
                 </button>
               )}
+              <button
+                className="sb-button"
+                type="button"
+                disabled={invitingEmail === assignment.reviewerEmail}
+                onClick={() => void inviteReviewer(assignment.reviewerName, assignment.reviewerEmail)}
+              >
+                {invitingEmail === assignment.reviewerEmail ? "Sending…" : "Send invite / reminder"}
+              </button>
               <button
                 className="sb-icon-button sb-icon-button--danger"
                 type="button"

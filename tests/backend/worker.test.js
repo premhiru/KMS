@@ -475,6 +475,165 @@ describe('speaker, reviewer, and integration boundaries', () => {
 })
 
 describe('production operations', () => {
+  it('delivers idempotent acceptance and rejection notifications to the proposal speaker', async () => {
+    const DB = new D1Mock()
+    const env = { DB, RESEND_API_KEY: 'resend-decisions', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true' }
+    const headers = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-decisions', 'oai-authenticated-user-email': 'owner@example.com' }
+    const endpoint = 'https://app.test/api/workspaces/workspace-decisions/events/event-decisions'
+    const speaker = { id: 'speaker-decision', firstName: 'Dev', lastName: 'Decision', email: 'dev@example.com', company: '', jobTitle: '', bio: '', status: 'invited', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    const submission = { id: 'submission-decision', title: 'Decision ready proposal', abstract: 'A proposal awaiting an explicit notification.', track: 'AI', format: 'Talk', durationMinutes: 30, speakerIds: [speaker.id], status: 'in-review', tags: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    const state = validAppState('event-decisions', { event: { name: 'Decision Summit', slug: 'decision-summit' }, speakers: [speaker], submissions: [submission] })
+    expect((await fetchHandler(new Request(`${endpoint}/state`, { method: 'PUT', headers, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)).status).toBe(201)
+    const delivered = []
+    const providerFetch = vi.fn(async (_url, options) => {
+      const payload = JSON.parse(options.body)
+      expect(payload.to).toEqual(['dev@example.com'])
+      delivered.push({ subject: payload.subject, text: payload.text })
+      return new Response(JSON.stringify({ id: `resend-decision-${delivered.length}` }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', providerFetch)
+    for (const status of ['accepted', 'declined']) {
+      const body = JSON.stringify({ idempotencyKey: `decision-${submission.id}-${status}`, messages: [{ speakerId: speaker.id, subject: `Decision Summit: ${status} — ${submission.title}`, text: `Your proposal “${submission.title}” is ${status}.` }] })
+      expect((await fetchHandler(new Request(`${endpoint}/integrations/email/send`, { method: 'POST', headers, body }), env)).status).toBe(200)
+      expect((await (await fetchHandler(new Request(`${endpoint}/integrations/email/send`, { method: 'POST', headers, body }), env)).json()).data.replayed).toBe(true)
+    }
+    expect(providerFetch).toHaveBeenCalledTimes(2)
+    expect(delivered.map((message) => message.subject)).toEqual([
+      'Decision Summit: accepted — Decision ready proposal',
+      'Decision Summit: declined — Decision ready proposal',
+    ])
+    expect(delivered[1].text).toContain('declined')
+    DB.database.close()
+  })
+
+  it('sends recipient-safe, durable, idempotent bulk deliverable reminder email', async () => {
+    const DB = new D1Mock()
+    const env = { DB, RESEND_API_KEY: 'resend-deliverables', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true' }
+    const headers = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-deliverables', 'oai-authenticated-user-email': 'owner@example.com' }
+    const endpoint = 'https://app.test/api/workspaces/workspace-deliverables/events/event-deliverables'
+    const state = validAppState('event-deliverables', {
+      event: { name: 'Delivery Summit', slug: 'delivery-summit' },
+      speakers: [{ id: 'speaker-delivery', firstName: 'Dana', lastName: 'Diaz', email: 'dana@example.com', company: '', jobTitle: '', bio: '', status: 'confirmed', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+      tasks: [
+        { id: 'task-headshot', speakerId: 'speaker-delivery', kind: 'headshot', title: 'Headshot', dueAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'task-slides', speakerId: 'speaker-delivery', kind: 'slides', title: 'Final slides', dueAt: '2026-08-21T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'task-complete', speakerId: 'speaker-delivery', kind: 'profile', title: 'Profile', dueAt: '2026-08-19T00:00:00.000Z', completedAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z' },
+      ],
+    })
+    expect((await fetchHandler(new Request(`${endpoint}/state`, { method: 'PUT', headers, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)).status).toBe(201)
+    const providerFetch = vi.fn(async (_url, options) => {
+      const payload = JSON.parse(options.body)
+      expect(payload.to).toEqual(['dana@example.com'])
+      expect(payload.text).toContain('Headshot')
+      expect(payload.text).toContain('Final slides')
+      expect(payload.attachments).toBeUndefined()
+      return new Response(JSON.stringify({ id: 'resend-deliverables-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', providerFetch)
+    const body = JSON.stringify({ idempotencyKey: 'deliverables-bulk-001', taskIds: ['task-headshot', 'task-slides'] })
+    const sent = await fetchHandler(new Request(`${endpoint}/deliverables/reminders`, { method: 'POST', headers, body }), env)
+    expect(sent.status).toBe(200)
+    expect(await sent.json()).toMatchObject({ data: { status: 'sent', replayed: false, result: { requestedTasks: 2, recipients: 1, sent: 1, failed: 0, deliveries: [{ speakerId: 'speaker-delivery', taskIds: ['task-headshot', 'task-slides'], calendarAttached: false }] } } })
+    const replay = await fetchHandler(new Request(`${endpoint}/deliverables/reminders`, { method: 'POST', headers, body }), env)
+    expect(await replay.json()).toMatchObject({ data: { replayed: true, result: { sent: 1 } } })
+    expect(providerFetch).toHaveBeenCalledTimes(1)
+    const completed = await fetchHandler(new Request(`${endpoint}/deliverables/reminders`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: 'deliverables-bulk-002', taskIds: ['task-complete'] }) }), env)
+    expect(completed.status).toBe(422)
+    expect((await completed.json()).error.code).toBe('TASK_ALREADY_COMPLETE')
+    const status = await (await fetchHandler(new Request(`${endpoint}/integrations`, { headers }), env)).json()
+    expect(status.data.runs[0]).toMatchObject({ action: 'deliverables.remind', status: 'sent' })
+    expect(status.data.deliveries[0]).toMatchObject({ recipient_email: 'dana@example.com', provider_message_id: 'resend-deliverables-1', status: 'sent' })
+    DB.database.close()
+  })
+
+  it('provisions an event-scoped reviewer through a one-time invitation and least-privilege session', async () => {
+    const DB = new D1Mock()
+    const env = { DB, RESEND_API_KEY: 'resend-reviewers', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true', REVIEWER_INVITE_RATE_LIMIT: '2' }
+    const headers = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-reviewers', 'oai-authenticated-user-email': 'owner@example.com' }
+    const eventId = 'event-reviewer-invite'
+    const endpoint = `https://app.test/api/workspaces/workspace-reviewer-invite/events/${eventId}`
+    const state = validAppState(eventId, {
+      event: { name: 'Reviewer Summit', slug: 'reviewer-summit' },
+      evaluationPlans: [{ id: 'plan-invite', name: 'Main review', instructions: '', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+      evaluationRounds: [{ id: 'round-invite', planId: 'plan-invite', name: 'Round 1', position: 1, status: 'open', opensAt: '2020-01-01T00:00:00.000Z', dueAt: '2099-01-01T00:00:00.000Z', blind: true, instructions: '', rubric: [{ id: 'quality', label: 'Quality', weight: 1, maxScore: 5 }], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+      submissions: [{ id: 'submission-invite', title: 'Invited review', abstract: 'A sufficiently complete abstract.', track: 'AI', format: 'Talk', durationMinutes: 30, speakerIds: [], status: 'in-review', tags: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+      evaluationAssignments: [{ id: 'assignment-invite', roundId: 'round-invite', submissionId: 'submission-invite', reviewerName: 'Rita Reviewer', reviewerEmail: 'rita@example.com', status: 'assigned', assignedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    })
+    expect((await fetchHandler(new Request(`${endpoint}/state`, { method: 'PUT', headers, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)).status).toBe(201)
+    let rawToken = ''
+    const issuedTokens = []
+    const reviewerSubjects = []
+    const providerFetch = vi.fn(async (_url, options) => {
+      const payload = JSON.parse(options.body)
+      expect(payload.to).toEqual(['rita@example.com'])
+      reviewerSubjects.push(payload.subject)
+      const link = payload.text.match(/https:\/\/[^\s]+reviewerToken=([^\s]+)/)?.[0]
+      expect(link).toBeTruthy()
+      rawToken = new URL(link).searchParams.get('reviewerToken')
+      issuedTokens.push(rawToken)
+      return new Response(JSON.stringify({ id: 'resend-reviewer-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', providerFetch)
+    const invite = await fetchHandler(new Request(`${endpoint}/reviewer-invitations`, { method: 'POST', headers, body: JSON.stringify({ email: 'rita@example.com', name: 'Rita Reviewer', returnUrl: 'https://app.test/?eventId=event-reviewer-invite#/submissions' }) }), env)
+    expect(invite.status).toBe(201)
+    expect(await invite.json()).toMatchObject({ data: { email: 'rita@example.com', status: 'sent', assignmentCount: 1, providerMessageId: 'resend-reviewer-1' } })
+    expect(rawToken).toMatch(/^[A-Za-z0-9_-]{40,100}$/)
+    const wrongEvent = await fetchHandler(new Request(`https://app.test/api/public/reviewer-invitations/workspace-reviewer-invite/event-wrong?token=${rawToken}`), env)
+    expect(wrongEvent.status).toBe(401)
+    const redeemed = await fetchHandler(new Request(`https://app.test/api/public/reviewer-invitations/workspace-reviewer-invite/${eventId}?token=${rawToken}`), env)
+    expect(redeemed.status).toBe(200)
+    const cookie = redeemed.headers.get('set-cookie').split(';')[0]
+    expect(cookie).toContain('openspeaker_reviewer_session=')
+    const replay = await fetchHandler(new Request(`https://app.test/api/public/reviewer-invitations/workspace-reviewer-invite/${eventId}?token=${rawToken}`), env)
+    expect(replay.status).toBe(401)
+    const queue = await fetchHandler(new Request(`${endpoint}/reviewer-queue`, { headers: { cookie } }), env)
+    expect(queue.status).toBe(200)
+    expect(await queue.json()).toMatchObject({ data: { reviewer: { email: 'rita@example.com' }, submissions: [{ id: 'submission-invite', speakerIds: [] }] } })
+    expect((await fetchHandler(new Request(`${endpoint}/state`, { headers: { cookie } }), env)).status).toBe(401)
+    expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-reviewer-invite/session', { headers: { cookie } }), env)).status).toBe(401)
+    expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-reviewer-invite/events/event-wrong/reviewer-queue', { headers: { cookie } }), env)).status).toBe(401)
+    const secondInvite = await fetchHandler(new Request(`${endpoint}/reviewer-invitations`, { method: 'POST', headers, body: JSON.stringify({ email: 'rita@example.com', name: 'Rita Reviewer', returnUrl: 'https://app.test/?eventId=event-reviewer-invite#/reviews', purpose: 'reminder', roundId: 'round-invite' }) }), env)
+    expect(secondInvite.status).toBe(201)
+    expect(reviewerSubjects).toEqual(['Reviewer Summit: reviewer invitation', 'Reviewer Summit: Round 1 review reminder'])
+    const secondPayload = await secondInvite.json()
+    DB.database.prepare(`UPDATE reviewer_invitation_tokens SET expires_at='2020-01-01T00:00:00.000Z' WHERE id=?`).run(secondPayload.data.invitationId)
+    const expired = await fetchHandler(new Request(`https://app.test/api/public/reviewer-invitations/workspace-reviewer-invite/${eventId}?token=${issuedTokens[1]}`), env)
+    expect(expired.status).toBe(401)
+    const rateLimited = await fetchHandler(new Request(`${endpoint}/reviewer-invitations`, { method: 'POST', headers, body: JSON.stringify({ email: 'rita@example.com', name: 'Rita Reviewer', returnUrl: 'https://app.test/?eventId=event-reviewer-invite#/reviews' }) }), env)
+    expect(rateLimited.status).toBe(429)
+    DB.database.close()
+  })
+
+  it('emails a manually added speaker a one-time, event-scoped portal invitation', async () => {
+    const DB = new D1Mock()
+    const env = { DB, RESEND_API_KEY: 'resend-speakers', EMAIL_FROM: 'Summit <events@example.com>', ALLOW_LOCAL_AUTH: 'true' }
+    const headers = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-speakers', 'oai-authenticated-user-email': 'owner@example.com' }
+    const eventId = 'event-speaker-invite'
+    const endpoint = `https://app.test/api/workspaces/workspace-speaker-invite/events/${eventId}`
+    const state = validAppState(eventId, { event: { name: 'Speaker Summit', slug: 'speaker-summit' }, speakers: [{ id: 'speaker-manual', firstName: 'Mina', lastName: 'Manual', email: 'mina@example.com', company: '', jobTitle: '', bio: '', status: 'invited', availability: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }] })
+    expect((await fetchHandler(new Request(`${endpoint}/state`, { method: 'PUT', headers, body: JSON.stringify({ expectedRevision: 0, event: { name: state.event.name, slug: state.event.slug, cfpOpen: false, cfpConfig: {} }, state }) }), env)).status).toBe(201)
+    let token = ''
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      const payload = JSON.parse(options.body)
+      expect(payload.to).toEqual(['mina@example.com'])
+      const link = payload.text.match(/https:\/\/[^\s]+claimToken=([^\s]+)/)?.[0]
+      token = new URL(link).searchParams.get('claimToken')
+      return new Response(JSON.stringify({ id: 'resend-speaker-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const invite = await fetchHandler(new Request(`${endpoint}/speaker-invitations`, { method: 'POST', headers, body: JSON.stringify({ speakerId: 'speaker-manual', returnUrl: 'https://app.test/?eventId=event-speaker-invite&eventSlug=speaker-summit#/portal' }) }), env)
+    expect(invite.status).toBe(201)
+    expect(await invite.json()).toMatchObject({ data: { speakerId: 'speaker-manual', email: 'mina@example.com', status: 'sent', providerMessageId: 'resend-speaker-1' } })
+    expect(token).toMatch(/^[A-Za-z0-9_-]{40,100}$/)
+    expect((await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-speaker-invite/wrong-slug/claim?token=${token}`), env)).status).toBe(401)
+    const redeemed = await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-speaker-invite/speaker-summit/claim?token=${token}`), env)
+    expect(redeemed.status).toBe(200)
+    const cookie = redeemed.headers.get('set-cookie').split(';')[0]
+    const portal = await fetchHandler(new Request(`${endpoint}/speaker-portal`, { headers: { cookie } }), env)
+    expect(await portal.json()).toMatchObject({ data: { portal: { speaker: { id: 'speaker-manual', email: 'mina@example.com' } } } })
+    expect((await fetchHandler(new Request(`https://app.test/api/public/cfp/workspace-speaker-invite/speaker-summit/claim?token=${token}`), env)).status).toBe(401)
+    DB.database.close()
+  })
+
   it('keeps recoverable state history and rolls back as a new optimistic revision', async () => {
     const DB = new D1Mock()
     const env = { DB, ALLOW_LOCAL_AUTH: 'true' }
@@ -817,7 +976,7 @@ describe('D1 initialization', () => {
   })
 
   it('keeps each prepared migration as a single SQL statement', () => {
-    expect(MIGRATION_VERSIONS).toEqual(['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm'])
+    expect(MIGRATION_VERSIONS).toEqual(['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm', '0007_reviewer_invitations'])
     expect(SCHEMA_STATEMENTS.length).toBeGreaterThan(8)
     for (const statement of SCHEMA_STATEMENTS) {
       expect(statement.trim()).not.toContain(';')

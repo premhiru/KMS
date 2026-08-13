@@ -377,6 +377,71 @@ export interface SendEmailReceipt {
   errorMessage?: string
 }
 
+export interface DeliverableReminderInput {
+  idempotencyKey: string
+  taskIds: Id[]
+  note?: string
+  includeCalendar?: boolean
+}
+
+export interface DeliverableReminderDelivery extends EmailDeliveryResult {
+  taskIds: Id[]
+  calendarAttached: boolean
+}
+
+export interface DeliverableReminderReceipt {
+  runId: Id
+  status: IntegrationRunStatus
+  replayed: boolean
+  result: {
+    requestedTasks: number
+    recipients: number
+    sent: number
+    failed: number
+    deliveries: DeliverableReminderDelivery[]
+  }
+}
+
+export interface ReviewerInvitationInput {
+  email: string
+  name?: string
+  returnUrl: string
+  purpose?: 'invite' | 'reminder'
+  roundId?: Id
+}
+
+export interface ReviewerInvitationReceipt {
+  invitationId: Id
+  email: string
+  status: 'sent' | 'failed'
+  providerMessageId?: string
+  errorMessage?: string
+  expiresAt: string
+  assignmentCount: number
+}
+
+export interface ReviewerInvitationRedemption {
+  redeemed: true
+  eventId: Id
+  reviewer: { email: string; name: string }
+  expiresAt: string
+}
+
+export interface SpeakerInvitationInput {
+  speakerId: Id
+  returnUrl: string
+}
+
+export interface SpeakerInvitationReceipt {
+  invitationId: Id
+  speakerId: Id
+  email: string
+  status: 'sent' | 'failed'
+  providerMessageId?: string
+  errorMessage?: string
+  expiresAt: string
+}
+
 export interface AcceleventsSyncReceipt {
   runId: Id
   status: IntegrationRunStatus
@@ -472,6 +537,7 @@ export interface ReviewerQueueReview extends Review {
 
 export interface ReviewerQueue {
   revision: number
+  reviewer?: { id: Id; email: string; name: string }
   event: EventConfig
   assignments: Array<EvaluationAssignment & { blind?: boolean; planId?: Id }>
   rounds: Array<{

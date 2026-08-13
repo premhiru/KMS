@@ -7,6 +7,8 @@ import type {
   AcceleventsSyncReceipt,
   AuditEntry,
   DownloadedAsset,
+  DeliverableReminderInput,
+  DeliverableReminderReceipt,
   HealthStatus,
   IntegrationLogs,
   IntegrationStatus,
@@ -23,6 +25,11 @@ import type {
   ReviewerMutationInput,
   ReviewerMutationReceipt,
   ReviewerQueue,
+  ReviewerInvitationInput,
+  ReviewerInvitationReceipt,
+  ReviewerInvitationRedemption,
+  SpeakerInvitationInput,
+  SpeakerInvitationReceipt,
   ReminderAutomationStatus,
   RequestOptions,
   RunRemindersInput,
@@ -58,12 +65,16 @@ import {
   parseCfpClaimRequestReceipt,
   parseHealth,
   parseIntegrationStatus,
+  parseDeliverableReminderReceipt,
   parseMemberReceipt,
   parseMembers,
   parsePublicCfp,
   parsePublicEvent,
   parseReviewerMutation,
   parseReviewerQueue,
+  parseReviewerInvitationReceipt,
+  parseReviewerInvitationRedemption,
+  parseSpeakerInvitationReceipt,
   parseReminderAutomationStatus,
   parseRunRemindersReceipt,
   parseSubmissionReceipt,
@@ -220,6 +231,16 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
     })
   }
 
+  verifyReviewerInvitation(token: string, options: RequestOptions = {}): Promise<ReviewerInvitationRedemption> {
+    if (!token.trim()) return Promise.reject(new ApiError('A reviewer invitation token is required.', {
+      code: 'REVIEWER_TOKEN_REQUIRED', requestId: 'client-validation', method: 'GET', url: `api/public/reviewer-invitations/${segment(this.workspaceId)}/${segment(this.eventId)}`,
+    }))
+    return this.transport.request({
+      path: `api/public/reviewer-invitations/${segment(this.workspaceId)}/${segment(this.eventId)}?token=${encodeURIComponent(token)}`,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseReviewerInvitationRedemption,
+    })
+  }
+
   uploadAsset(file: File, options: RequestOptions = {}): Promise<UploadedAsset> {
     return this.transport.request({
       path: this.eventPath('assets'), method: 'POST', rawBody: file,
@@ -300,6 +321,27 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
     return this.transport.request({
       path: this.eventPath('integrations/email/send'), method: 'POST', body: input,
       signal: options.signal, timeoutMs: options.timeoutMs, parse: parseSendEmailReceipt,
+    })
+  }
+
+  sendDeliverableReminders(input: DeliverableReminderInput, options: RequestOptions = {}): Promise<DeliverableReminderReceipt> {
+    return this.transport.request({
+      path: this.eventPath('deliverables/reminders'), method: 'POST', body: input,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseDeliverableReminderReceipt,
+    })
+  }
+
+  inviteReviewer(input: ReviewerInvitationInput, options: RequestOptions = {}): Promise<ReviewerInvitationReceipt> {
+    return this.transport.request({
+      path: this.eventPath('reviewer-invitations'), method: 'POST', body: input,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseReviewerInvitationReceipt,
+    })
+  }
+
+  inviteSpeaker(input: SpeakerInvitationInput, options: RequestOptions = {}): Promise<SpeakerInvitationReceipt> {
+    return this.transport.request({
+      path: this.eventPath('speaker-invitations'), method: 'POST', body: input,
+      signal: options.signal, timeoutMs: options.timeoutMs, parse: parseSpeakerInvitationReceipt,
     })
   }
 

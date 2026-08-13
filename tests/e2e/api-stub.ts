@@ -25,6 +25,10 @@ export interface ApiStubControl {
   cfpSubmissions: Array<Record<string, unknown>>
   claimRequests: Array<Record<string, unknown>>
   claimVerifications: string[]
+  emailSends: Array<Record<string, unknown>>
+  deliverableReminderSends: Array<Record<string, unknown>>
+  reviewerInvitations: Array<Record<string, unknown>>
+  speakerInvitations: Array<Record<string, unknown>>
   feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }>
   readonly crm: CrmDocument
   readonly crmRevision: number
@@ -82,6 +86,10 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   const cfpSubmissions: Array<Record<string, unknown>> = []
   const claimRequests: Array<Record<string, unknown>> = []
   const claimVerifications: string[] = []
+  const emailSends: Array<Record<string, unknown>> = []
+  const deliverableReminderSends: Array<Record<string, unknown>> = []
+  const reviewerInvitations: Array<Record<string, unknown>> = []
+  const speakerInvitations: Array<Record<string, unknown>> = []
   const feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }> = []
   let crmRevision = 1
   let crm: CrmDocument = {
@@ -113,6 +121,10 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     cfpSubmissions,
     claimRequests,
     claimVerifications,
+    emailSends,
+    deliverableReminderSends,
+    reviewerInvitations,
+    speakerInvitations,
     feedRequests,
     get crm() { return crm },
     get crmRevision() { return crmRevision },
@@ -267,6 +279,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
 
     if (path.endsWith('/reviewer-queue') && method === 'GET') {
       const assignments = (currentState.evaluationAssignments ?? []).filter((assignment) => assignment.reviewerEmail.toLowerCase() === email.toLowerCase())
+      if (assignments.length === 0 && claimedPortalOnly) return error(route, 403, 'ROLE_FORBIDDEN', 'No reviewer assignments exist for this event identity.')
       const submissionIds = new Set(assignments.map((assignment) => assignment.submissionId))
       const roundIds = new Set(assignments.map((assignment) => assignment.roundId))
       const rounds = (currentState.evaluationRounds ?? []).filter((round) => roundIds.has(round.id))
@@ -314,6 +327,53 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
         const updatedSpeaker = currentState.speakers.find((item) => item.id === speaker.id)!
         return json(route, { data: { revision, portal: { ...portal(), speaker: updatedSpeaker } } }, 200, { ETag: `"${revision}"` })
       }
+    }
+
+    if (path.endsWith('/integrations/email/send') && method === 'POST') {
+      const input = request.postDataJSON() as Record<string, unknown>
+      emailSends.push(input)
+      const messages = Array.isArray(input.messages) ? input.messages as Array<{ speakerId?: string }> : []
+      return json(route, { data: { runId: `email-run-${emailSends.length}`, status: 'sent', replayed: false, result: { sent: messages.length, failed: 0, deliveries: messages.map((message, index) => ({ speakerId: message.speakerId ?? `speaker-${index}`, status: 'sent', providerMessageId: `provider-${index}` })) } } })
+    }
+
+    if (path.endsWith('/deliverables/reminders') && method === 'POST') {
+      const input = request.postDataJSON() as Record<string, unknown>
+      deliverableReminderSends.push(input)
+      const taskIds = Array.isArray(input.taskIds) ? input.taskIds as string[] : []
+      const tasks = currentState.tasks.filter((task) => taskIds.includes(task.id) && !task.completedAt)
+      const speakerIds = [...new Set(tasks.map((task) => task.speakerId))]
+      return json(route, { data: { runId: `deliverable-run-${deliverableReminderSends.length}`, status: 'sent', replayed: false, result: { requestedTasks: taskIds.length, recipients: speakerIds.length, sent: speakerIds.length, failed: 0, deliveries: speakerIds.map((speakerId, index) => ({ speakerId, status: 'sent', providerMessageId: `deliverable-provider-${index}`, taskIds: tasks.filter((task) => task.speakerId === speakerId).map((task) => task.id), calendarAttached: false })) } } })
+    }
+
+    if (path.endsWith('/reviewer-invitations') && method === 'POST') {
+      const input = request.postDataJSON() as Record<string, unknown>
+      reviewerInvitations.push(input)
+      const targetEmail = String(input.email ?? '')
+      const assignmentCount = (currentState.evaluationAssignments ?? []).filter((assignment) => assignment.reviewerEmail.toLowerCase() === targetEmail.toLowerCase()).length
+      return json(route, { data: { invitationId: `reviewer-invite-${reviewerInvitations.length}`, email: targetEmail, status: 'sent', providerMessageId: 'reviewer-provider-1', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), assignmentCount } }, 201)
+    }
+
+    if (path.endsWith('/speaker-invitations') && method === 'POST') {
+      const input = request.postDataJSON() as Record<string, unknown>
+      speakerInvitations.push(input)
+      const speaker = currentState.speakers.find((item) => item.id === input.speakerId)
+      return json(route, { data: { invitationId: `speaker-invite-${speakerInvitations.length}`, email: speaker?.email ?? '', status: 'sent', providerMessageId: 'speaker-provider-1', expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }, 201)
+    }
+
+    if (path.endsWith('/state/history') && method === 'GET') {
+      return json(route, { data: { eventId: currentState.event.id, currentRevision: revision, revisions: [
+        { revision, updated_by: 'user-owner', created_at: currentState.lastUpdatedAt, reason: 'current save', size_bytes: JSON.stringify(currentState).length },
+        { revision: revision - 1, updated_by: 'user-owner', created_at: currentState.event.startAt, reason: 'program edit', size_bytes: JSON.stringify(currentState).length },
+      ] } })
+    }
+
+    const revisionDetail = path.match(/\/state\/history\/(\d+)$/)
+    if (revisionDetail && method === 'GET') return json(route, { data: { eventId: currentState.event.id, revision: Number(revisionDetail[1]), updatedBy: 'user-owner', createdAt: currentState.lastUpdatedAt, reason: 'program edit', state: currentState } })
+
+    if (path.endsWith('/state/rollback') && method === 'POST') {
+      const input = request.postDataJSON() as { expectedRevision: number; targetRevision: number }
+      revision += 1
+      return json(route, { data: { eventId: currentState.event.id, revision, rolledBackFrom: input.expectedRevision, targetRevision: input.targetRevision, updatedAt: new Date().toISOString() } })
     }
 
     if (path.endsWith('/integrations') && method === 'GET') return json(route, { data: { configured: { resend: false, accelevents: false }, runs: [], deliveries: [] } })

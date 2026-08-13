@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { createId, createSpeaker, nowIso, selectOnboardingPercent, selectTasksForSpeaker, speakerName, useApp } from '../../core'
 import type { OnboardingTask, Speaker, SpeakerInput, SpeakerStatus } from '../../domain'
 import { parseSpeakerCsv } from './speaker-import'
@@ -23,11 +23,64 @@ function TaskList({ speaker, tasks, announce }: { speaker: Speaker; tasks: Onboa
   return <ul className="spk-task-list">{tasks.map((task) => <li key={task.id}><label><input type="checkbox" checked={Boolean(task.completedAt)} onChange={(event) => dispatch({ type: 'task/toggle', id: task.id, completed: event.target.checked })} /><span><strong>{task.title}</strong><small>{task.instructions || `Due ${formatDate(task.dueAt)}`}</small></span></label>{task.asset && <div className="spk-file-row"><span>{task.asset.name} · v{task.assetVersion ?? 1} · {task.approvalStatus ?? 'pending'}</span>{task.asset.id && <button className="spk-button spk-button-secondary" type="button" onClick={() => void download(task)}>Download</button>}<label className="spk-button spk-button-secondary">Upload new version<input hidden type="file" onChange={(event) => void upload(task, event)} /></label></div>}</li>)}</ul>
 }
 
+function HeadshotEditor({ speaker, announce }: { speaker: Speaker; announce: (value: string) => void }) {
+  const { state, dispatch, downloadAsset, uploadAsset, persistenceMode } = useApp()
+  const headshot = selectTasksForSpeaker(state, speaker.id).find((task) => task.kind === 'headshot')
+  const [preview, setPreview] = useState(speaker.photoUrl ?? '')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!headshot?.asset?.id) { setPreview(speaker.photoUrl ?? ''); return }
+    let active = true
+    let objectUrl = ''
+    void downloadAsset(headshot.asset.id).then((result) => {
+      if (!active) return
+      objectUrl = URL.createObjectURL(result.blob)
+      setPreview(objectUrl)
+    }).catch(() => setPreview(speaker.photoUrl ?? ''))
+    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [downloadAsset, headshot?.asset?.id, speaker.photoUrl])
+
+  const upload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) {
+      announce('Choose a JPG, PNG, or WebP image no larger than 10 MB.')
+      event.target.value = ''
+      return
+    }
+    setBusy(true)
+    try {
+      const at = nowIso()
+      const taskId = headshot?.id ?? createId('task')
+      if (!headshot) dispatch({ type: 'task/upsert', task: { id: taskId, speakerId: speaker.id, kind: 'headshot', title: 'Upload headshot', instructions: 'JPG, PNG, or WebP · maximum 10 MB', dueAt: state.event.endAt, updatedAt: at }, at })
+      const remote = persistenceMode === 'remote' ? await uploadAsset(file) : undefined
+      const asset = remote ? { id: remote.id, name: remote.fileName, type: remote.contentType, size: remote.sizeBytes, selectedAt: remote.createdAt, storage: 'r2' as const } : { name: file.name, type: file.type, size: file.size, selectedAt: at, storage: 'local-metadata' as const }
+      dispatch({ type: 'task/toggle', id: taskId, completed: true, asset, uploadedBy: 'Organizer', at })
+      dispatch({ type: 'task/review', id: taskId, status: 'approved', note: 'Approved organizer profile headshot.', at })
+      setPreview((current) => { if (current.startsWith('blob:')) URL.revokeObjectURL(current); return URL.createObjectURL(file) })
+      announce(`${file.name} saved and approved as ${speakerName(speaker)}'s profile headshot.`)
+    } catch (error) {
+      announce(error instanceof Error ? error.message : 'The profile headshot could not be saved.')
+    } finally {
+      setBusy(false)
+      event.target.value = ''
+    }
+  }
+
+  return <section className="spk-headshot-editor" aria-labelledby={`headshot-${speaker.id}`}>
+    <div className="spk-headshot-preview">{preview ? <img src={preview} alt={`${speakerName(speaker)} profile headshot`} /> : <span aria-hidden="true">{speaker.firstName[0]}{speaker.lastName[0]}</span>}</div>
+    <div><h3 id={`headshot-${speaker.id}`}>Profile headshot</h3><p>{headshot?.asset ? `${headshot.asset.name} · approved · ${formatDate(headshot.asset.selectedAt)}` : 'No profile headshot uploaded.'}</p><small>Accepted: JPG, PNG, or WebP · maximum 10 MB.</small><label className="spk-button spk-button-secondary">{busy ? 'Uploading…' : headshot?.asset ? 'Replace headshot' : 'Upload headshot'}<input hidden type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={(event) => void upload(event)} /></label></div>
+  </section>
+}
+
 function SpeakerEditor({ speaker, announce }: { speaker: Speaker; announce: (value: string) => void }) {
-  const { state, dispatch } = useApp(); const tasks = selectTasksForSpeaker(state, speaker.id)
+  const { state, dispatch, api, persistenceMode } = useApp(); const tasks = selectTasksForSpeaker(state, speaker.id)
   const [form, setForm] = useState({ ...speaker })
+  const [inviting, setInviting] = useState(false)
   const save = (event: FormEvent) => { event.preventDefault(); dispatch({ type: 'speaker/update', id: speaker.id, patch: { ...form, email: form.email.trim().toLowerCase() }, at: nowIso() }); announce('Speaker profile saved.') }
-  return <section className="spk-detail"><header className="spk-detail-head"><div className="spk-avatar spk-avatar-large">{speaker.firstName[0]}{speaker.lastName[0]}</div><div><p className="spk-kicker">Speaker profile</p><h2>{speakerName(speaker)}</h2><span className={`spk-status spk-status-${speaker.status}`}>{labels[speaker.status]}</span></div></header><div className="spk-progress-group"><div><strong>Onboarding progress</strong><span>{selectOnboardingPercent(state, speaker.id)}%</span></div><progress value={selectOnboardingPercent(state, speaker.id)} max="100" /></div><form className="spk-form" onSubmit={save}><div className="spk-form-grid">{(['firstName','lastName','email','company','jobTitle','pronouns','twitterUrl','linkedinUrl','travelPreferences'] as const).map((field) => <label key={field}>{field.replace(/([A-Z])/g, ' $1')}<input type={field === 'email' ? 'email' : field.endsWith('Url') ? 'url' : 'text'} value={String(form[field] ?? '')} onChange={(e) => setForm({ ...form, [field]: e.target.value })} /></label>)}<label>Status<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as SpeakerStatus })}>{Object.entries(labels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>Biography<textarea rows={5} value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} /></label><div className="spk-form-actions"><button className="spk-button spk-button-primary">Save profile</button></div></form><Sessions speaker={speaker} /><div className="spk-section-heading"><div><p className="spk-kicker">Deliverables</p><h3>Tasks and files</h3></div></div><TaskList speaker={speaker} tasks={tasks} announce={announce} /></section>
+  const invite = async () => { if (!api || persistenceMode !== 'remote') return announce('Speaker invitation email is available on the deployed application.'); setInviting(true); try { const returnUrl = new URL(window.location.href); returnUrl.hash = '#/portal'; returnUrl.searchParams.delete('claimToken'); const receipt = await api.inviteSpeaker({ speakerId: speaker.id, returnUrl: returnUrl.toString() }); announce(`Secure portal invitation sent to ${receipt.email}.`) } catch (error) { announce(error instanceof Error ? error.message : 'Speaker invitation delivery failed.') } finally { setInviting(false) } }
+  return <section className="spk-detail"><header className="spk-detail-head"><div className="spk-avatar spk-avatar-large">{speaker.firstName[0]}{speaker.lastName[0]}</div><div><p className="spk-kicker">Speaker profile</p><h2>{speakerName(speaker)}</h2><span className={`spk-status spk-status-${speaker.status}`}>{labels[speaker.status]}</span></div><button className="spk-button spk-button-secondary" type="button" disabled={inviting || speaker.status === 'declined'} onClick={() => void invite()}>{inviting ? 'Sending…' : 'Send portal invite'}</button></header><HeadshotEditor speaker={speaker} announce={announce} /><div className="spk-progress-group"><div><strong>Onboarding progress</strong><span>{selectOnboardingPercent(state, speaker.id)}%</span></div><progress value={selectOnboardingPercent(state, speaker.id)} max="100" /></div><form className="spk-form" onSubmit={save}><div className="spk-form-grid">{(['firstName','lastName','email','company','jobTitle','pronouns','twitterUrl','linkedinUrl','travelPreferences'] as const).map((field) => <label key={field}>{field.replace(/([A-Z])/g, ' $1')}<input type={field === 'email' ? 'email' : field.endsWith('Url') ? 'url' : 'text'} value={String(form[field] ?? '')} onChange={(e) => setForm({ ...form, [field]: e.target.value })} /></label>)}<label>Status<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as SpeakerStatus })}>{Object.entries(labels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>Biography<textarea rows={5} value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} /></label><div className="spk-form-actions"><button className="spk-button spk-button-primary">Save profile</button></div></form><Sessions speaker={speaker} /><div className="spk-section-heading"><div><p className="spk-kicker">Deliverables</p><h3>Tasks and files</h3></div></div><TaskList speaker={speaker} tasks={tasks} announce={announce} /></section>
 }
 
 export function OrganizerSpeakers() {
