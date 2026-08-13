@@ -24,6 +24,22 @@
 .admin-tabs span { background: var(--admin-soft); border-radius: 999px; color: var(--admin-muted); font-size: .6rem; padding: 2px 6px; }
 .admin-panel { background: #fff; border: 1px solid var(--admin-line); border-radius: 0 0 12px 12px; padding: 16px; }
 .admin-toolbar { align-items: center; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 14px; }
+.admin-evaluator-access { background: #f7f6fc; border: 1px solid #ded9f3; border-radius: 10px; margin-bottom: 15px; padding: 14px; }
+.admin-evaluator-access > div:first-child { align-items: flex-start; display: flex; gap: 10px; }
+.admin-evaluator-access > div:first-child > svg { color: var(--admin-primary); flex: none; height: 18px; margin-top: 2px; width: 18px; }
+.admin-evaluator-access h2 { font-size: .86rem; margin: 0 0 4px; }
+.admin-evaluator-access p { color: #5f5c6b; font-size: .68rem; line-height: 1.5; margin: 0; }
+.admin-evaluator-access form { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.admin-evaluator-access form label { color: var(--admin-muted); display: grid; font-size: .64rem; font-weight: 750; gap: 5px; }
+.admin-evaluator-access form label:nth-child(2) { grid-template-columns: 90px auto; }
+.admin-evaluator-access form label:nth-child(2) > :first-child { grid-column: 1 / -1; }
+.admin-evaluator-access input { background: #fff; border: 1px solid var(--admin-line); border-radius: 7px; color: var(--admin-ink); font: inherit; min-height: 36px; padding: 6px 8px; width: 100px; }
+.admin-evaluator-access form span { align-self: center; font-size: .68rem; }
+.admin-invite-output { margin-top: 12px; }
+.admin-invite-output label { display: block; font-size: .68rem; font-weight: 800; margin-bottom: 5px; }
+.admin-invite-output textarea { background: #fff; border: 1px solid var(--admin-line); border-radius: 8px; color: #34313f; font: .66rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; max-width: 100%; padding: 9px; resize: vertical; width: 100%; }
+.admin-invite-output p { margin-top: 7px; }
+.admin-owner-only { margin-top: 10px !important; }
 .admin-search { align-items: center; border: 1px solid var(--admin-line); border-radius: 8px; display: flex; gap: 7px; max-width: 460px; padding: 0 10px; width: 100%; }
 .admin-search svg { color: var(--admin-muted); height: 15px; width: 15px; }
 .admin-search input { border: 0; font: inherit; font-size: .72rem; outline: 0; padding: 9px 0; width: 100%; }

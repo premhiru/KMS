@@ -14,6 +14,9 @@ import type {
   IntegrationStatus,
   MemberInput,
   MemberMutationReceipt,
+  OrganizerInvitationBatch,
+  OrganizerInvitationInput,
+  OrganizerInvitationRedemption,
   PublicCfpMetadata,
   PublicCfpClaimReceipt,
   PublicCfpClaimRequestInput,
@@ -68,6 +71,8 @@ import {
   parseDeliverableReminderReceipt,
   parseMemberReceipt,
   parseMembers,
+  parseOrganizerInvitationBatch,
+  parseOrganizerInvitationRedemption,
   parsePublicCfp,
   parsePublicEvent,
   parseReviewerMutation,
@@ -322,6 +327,17 @@ export class OpenSpeakerApiClient implements AppStateDataSource {
       path: this.eventPath('integrations/email/send'), method: 'POST', body: input,
       signal: options.signal, timeoutMs: options.timeoutMs, parse: parseSendEmailReceipt,
     })
+  }
+
+  createOrganizerInvitations(input: OrganizerInvitationInput, options: RequestOptions = {}): Promise<OrganizerInvitationBatch> {
+    return this.transport.request({ path: this.workspacePath('organizer-invitations'), method: 'POST', body: input, signal: options.signal, timeoutMs: options.timeoutMs, parse: parseOrganizerInvitationBatch })
+  }
+
+  redeemOrganizerInvitation(token: string, options: RequestOptions = {}): Promise<OrganizerInvitationRedemption> {
+    if (!token.trim()) return Promise.reject(new ApiError('An organizer invitation token is required.', {
+      code: 'ORGANIZER_TOKEN_REQUIRED', requestId: 'client-validation', method: 'GET', url: `api/public/organizer-invitations/${segment(this.workspaceId)}`,
+    }))
+    return this.transport.request({ path: `api/public/organizer-invitations/${segment(this.workspaceId)}?token=${encodeURIComponent(token)}`, signal: options.signal, timeoutMs: options.timeoutMs, parse: parseOrganizerInvitationRedemption })
   }
 
   sendDeliverableReminders(input: DeliverableReminderInput, options: RequestOptions = {}): Promise<DeliverableReminderReceipt> {

@@ -994,8 +994,41 @@ describe('D1 initialization', () => {
     DB.database.close()
   })
 
+  it('creates ten one-time evaluator links and binds a temporary organizer after trusted sign-in', async () => {
+    const DB = new D1Mock()
+    const env = { DB, ALLOW_LOCAL_AUTH: 'true' }
+    const ownerHeaders = { 'content-type': 'application/json', 'oai-authenticated-user-id': 'owner-evaluator-links', 'oai-authenticated-user-email': 'owner@example.com' }
+    expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-evaluator-links/session', { headers: ownerHeaders }), env)).status).toBe(200)
+    const created = await fetchHandler(new Request('https://app.test/api/workspaces/workspace-evaluator-links/organizer-invitations', {
+      method: 'POST', headers: ownerHeaders, body: JSON.stringify({ count: 10, accessDays: 30, returnUrl: 'https://app.test/#/dashboard' }),
+    }), env)
+    expect(created.status).toBe(201)
+    const batch = await created.json()
+    expect(batch.data.count).toBe(10)
+    expect(batch.data.invitations).toHaveLength(10)
+    const links = batch.data.invitations.map((invitation) => invitation.url)
+    expect(new Set(links).size).toBe(10)
+    expect(links.every((link) => link.startsWith('https://app.test/?organizerToken=') && link.endsWith('#/dashboard'))).toBe(true)
+    const rawToken = new URL(links[0]).searchParams.get('organizerToken')
+    expect(rawToken).toMatch(/^[A-Za-z0-9_-]{40,100}$/)
+    expect(DB.database.prepare(`SELECT token_hash FROM organizer_invitation_tokens WHERE id=?`).get(batch.data.invitations[0].id).token_hash).not.toBe(rawToken)
+
+    const unauthenticated = await fetchHandler(new Request(`https://app.test/api/public/organizer-invitations/workspace-evaluator-links?token=${rawToken}`), env)
+    expect(unauthenticated.status).toBe(401)
+    const evaluatorHeaders = { 'oai-authenticated-user-id': 'evaluator-user-1', 'oai-authenticated-user-email': 'evaluator@example.com', 'oai-authenticated-user-full-name': 'Eval%20One' }
+    const redeemed = await fetchHandler(new Request(`https://app.test/api/public/organizer-invitations/workspace-evaluator-links?token=${rawToken}`, { headers: evaluatorHeaders }), env)
+    expect(redeemed.status).toBe(200)
+    expect(await redeemed.json()).toMatchObject({ data: { user: { id: 'evaluator-user-1', email: 'evaluator@example.com', name: 'Eval One' }, role: 'organizer', expiresAt: batch.data.expiresAt } })
+    expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-evaluator-links/session', { headers: evaluatorHeaders }), env)).status).toBe(200)
+    const replay = await fetchHandler(new Request(`https://app.test/api/public/organizer-invitations/workspace-evaluator-links?token=${rawToken}`, { headers: { 'oai-authenticated-user-id': 'evaluator-user-2', 'oai-authenticated-user-email': 'other@example.com' } }), env)
+    expect(replay.status).toBe(401)
+    DB.database.prepare(`UPDATE memberships SET expires_at='2020-01-01T00:00:00.000Z' WHERE workspace_id=? AND user_id=?`).run('workspace-evaluator-links', 'evaluator-user-1')
+    expect((await fetchHandler(new Request('https://app.test/api/workspaces/workspace-evaluator-links/session', { headers: evaluatorHeaders }), env)).status).toBe(403)
+    DB.database.close()
+  })
+
   it('keeps each prepared migration as a single SQL statement', () => {
-    expect(MIGRATION_VERSIONS).toEqual(['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm', '0007_reviewer_invitations'])
+    expect(MIGRATION_VERSIONS).toEqual(['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm', '0007_reviewer_invitations', '0008_organizer_invitations'])
     expect(SCHEMA_STATEMENTS.length).toBeGreaterThan(8)
     for (const statement of SCHEMA_STATEMENTS) {
       expect(statement.trim()).not.toContain(';')

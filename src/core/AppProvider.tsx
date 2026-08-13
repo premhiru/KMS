@@ -19,6 +19,7 @@ import { applyReviewerReceipt } from './review-reconcile'
 import { exportAppState, importAppState, loadAppState, resetAppState, saveAppState } from './storage'
 import { redeemSpeakerClaimOnce, speakerClaimToken, stripSpeakerClaimFromUrl } from './speaker-claim-handoff'
 import { createPublicWelcomeState } from './public-welcome-state'
+import { organizerInvitationToken, redeemOrganizerInvitationOnce, stripOrganizerInvitationFromUrl } from './organizer-invite-handoff'
 import { routeFromHash, type AppRoute } from '../routes/hash-router'
 
 export interface AppProviderProps {
@@ -82,6 +83,7 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   // must still take the same speaker-only branch rather than hydrating an
   // unrelated hosting identity from the now-clean address.
   const portalClaimRef = useRef<string | undefined>(speakerClaimToken(new URL(window.location.href), window.location.hash.startsWith('#/portal')))
+  const organizerInvitationRef = useRef<string | undefined>(organizerInvitationToken(new URL(window.location.href)))
 
   const dispatch = useCallback((action: AppAction) => {
     localMutationVersionRef.current += 1
@@ -156,6 +158,23 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
           setSession({ user: { id: '', email: portal.portal.speaker.email, name: `${portal.portal.speaker.firstName} ${portal.portal.speaker.lastName}`.trim() }, role: 'speaker' })
           acceptLoaded(portalToState(portal.portal), portal.revision)
           return
+        }
+
+        const organizerToken = organizerInvitationRef.current
+        if (organizerToken) {
+          try {
+            const invited = await redeemOrganizerInvitationOnce(api, organizerToken)
+            window.history.replaceState(window.history.state, '', stripOrganizerInvitationFromUrl(new URL(window.location.href)))
+            setSession({ user: invited.user, role: invited.role })
+            const loaded = await api.getState({ signal: controller.signal })
+            acceptLoaded(loaded.state, loaded.revision)
+            return
+          } catch (error) {
+            if (error instanceof ApiError && error.code !== 'AUTH_REQUIRED') {
+              window.history.replaceState(window.history.state, '', stripOrganizerInvitationFromUrl(new URL(window.location.href)))
+            }
+            throw error
+          }
         }
 
         let identity: WorkspaceSession | undefined

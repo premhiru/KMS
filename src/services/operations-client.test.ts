@@ -91,6 +91,20 @@ describe('operational Worker routes', () => {
     ])
   })
 
+  it('creates and redeems temporary organizer evaluator invitations', async () => {
+    const expiresAt = '2026-09-12T00:00:00.000Z'
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ data: { invitations: [{ id: 'organizer-invite-1', url: 'https://app.example.test/?organizerToken=secret#/dashboard', expiresAt }], count: 1, expiresAt } }, { status: 201 }))
+      .mockResolvedValueOnce(json({ data: { user: { id: 'evaluator-1', email: 'evaluator@example.com', name: 'Evaluator' }, role: 'organizer', expiresAt } }))
+    const api = client(fetcher)
+    await expect(api.createOrganizerInvitations({ count: 1, accessDays: 30, returnUrl: 'https://app.example.test/#/dashboard' })).resolves.toMatchObject({ count: 1, invitations: [{ id: 'organizer-invite-1' }] })
+    await expect(api.redeemOrganizerInvitation('secret')).resolves.toMatchObject({ role: 'organizer', user: { email: 'evaluator@example.com' } })
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.test/api/workspaces/workspace-main/organizer-invitations',
+      'https://api.example.test/api/public/organizer-invitations/workspace-main?token=secret',
+    ])
+  })
+
   it('retains only the approved versioned resource-file contract in the speaker portal projection', async () => {
     const state = createSeedState()
     const portal = {

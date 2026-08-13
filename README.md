@@ -198,6 +198,8 @@ Production identity comes from trusted hosting headers. The application does not
 
 Anonymous applicants may request a one-time email link. The raw token is never stored; redemption creates a hashed, event-scoped session that does not grant workspace membership or access to organizer, reviewer, audit, CRM, asset-administration, or integration routes.
 
+For hands-off evaluations, an owner can open **Access & audit → Members** and generate up to ten one-time evaluator organizer links. Each evaluator signs in with their own ChatGPT identity, the link binds that verified identity automatically, and access expires after the owner-selected period. The raw links are displayed once, are never stored in plaintext, and must be shared privately rather than committed to the repository.
+
 ## Production deployment
 
 OpenSpeaker builds a React client and a Cloudflare-compatible Worker package.

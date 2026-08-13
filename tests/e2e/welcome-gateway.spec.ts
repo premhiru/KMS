@@ -96,3 +96,23 @@ test('speaker invitation bypasses the gateway and opens a standalone editable po
   await expect(page.getByRole('button', { name: 'Save profile' })).toBeEnabled()
   await expect(page).not.toHaveURL(/claimToken=/)
 })
+
+test('owner generates ten evaluator links and one link auto-provisions organizer access once', async ({ page }) => {
+  const api = await installApiStub(page, { role: 'owner' })
+  await page.goto('/#/admin')
+  await page.getByRole('button', { name: 'Generate 10 links' }).click()
+  await expect.poll(() => api.organizerInvitationLinks.length).toBe(10)
+  const output = page.getByLabel('Private evaluator links')
+  await expect(output).toContainText('1. http://127.0.0.1:4174/?organizerToken=')
+  await expect(output).toContainText('10. http://127.0.0.1:4174/?organizerToken=')
+
+  const invitation = api.organizerInvitationLinks[0]
+  await page.goto(invitation)
+  await expect(page.getByRole('heading', { name: /Good (morning|afternoon|evening)/ })).toBeVisible()
+  await expect(page).not.toHaveURL(/organizerToken=/)
+  expect(api.apiRequests.some((request) => request.path.includes('/public/organizer-invitations/'))).toBe(true)
+
+  await page.goto(invitation)
+  await expect(page.getByRole('heading', { name: 'Organizer sign-in required' })).toBeVisible()
+  await expect(page).not.toHaveURL(/organizerToken=/)
+})

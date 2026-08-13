@@ -31,6 +31,7 @@ export interface ApiStubControl {
   reviewerInvitations: Array<Record<string, unknown>>
   speakerInvitations: Array<Record<string, unknown>>
   speakerInvitationLinks: string[]
+  organizerInvitationLinks: string[]
   feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }>
   readonly crm: CrmDocument
   readonly crmRevision: number
@@ -94,6 +95,8 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   const reviewerInvitations: Array<Record<string, unknown>> = []
   const speakerInvitations: Array<Record<string, unknown>> = []
   const speakerInvitationLinks: string[] = []
+  const organizerInvitationLinks: string[] = []
+  const organizerInvitationTokens = new Set<string>()
   const feedRequests: Array<{ method: string; format: string; filters: Record<string, string> }> = []
   let crmRevision = 1
   let crm: CrmDocument = {
@@ -133,6 +136,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     reviewerInvitations,
     speakerInvitations,
     speakerInvitationLinks,
+    organizerInvitationLinks,
     feedRequests,
     get crm() { return crm },
     get crmRevision() { return crmRevision },
@@ -147,6 +151,13 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     const path = url.pathname
     const method = request.method()
     apiRequests.push({ method, path })
+
+    const organizerRedemption = path.match(/\/api\/public\/organizer-invitations\/[^/]+$/)
+    if (organizerRedemption && method === 'GET') {
+      const token = new URL(request.url()).searchParams.get('token') ?? ''
+      if (!organizerInvitationTokens.delete(token)) return error(route, 401, 'ORGANIZER_INVITATION_INVALID_OR_EXPIRED', 'This organizer invitation is invalid, expired, or already used.')
+      return json(route, { data: { user: { id: 'user-evaluator', email: 'evaluator@example.com', name: 'Evaluation Organizer' }, role: 'organizer', expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() } })
+    }
 
     if (options.hydrationFailure && path.endsWith('/session')) return error(route, 503, 'DATABASE_UNAVAILABLE', 'The shared workspace is temporarily unavailable.')
 
@@ -236,6 +247,21 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     if (path.endsWith('/session') && method === 'GET') {
       if (claimedPortalOnly) return error(route, 401, 'AUTH_REQUIRED', 'Workspace authentication is required.')
       return json(route, { data: { user: { id: `user-${role}`, email, name: role === 'reviewer' ? 'Sarah Lin' : role === 'speaker' ? 'Priya Rao' : 'Release Owner' }, role } })
+    }
+
+    if (path.endsWith('/organizer-invitations') && method === 'POST') {
+      const input = request.postDataJSON() as { count: number; accessDays: number; returnUrl: string }
+      const expiresAt = new Date(Date.now() + input.accessDays * 86_400_000).toISOString()
+      const invitations = Array.from({ length: input.count }, (_, index) => {
+        const token = `e2e-organizer-invite-${String(index + 1).padStart(24, '0')}`
+        organizerInvitationTokens.add(token)
+        const link = new URL(input.returnUrl)
+        link.searchParams.set('organizerToken', token)
+        link.hash = '#/dashboard'
+        organizerInvitationLinks.push(link.toString())
+        return { id: `organizer-invite-${index + 1}`, url: link.toString(), expiresAt }
+      })
+      return json(route, { data: { invitations, count: invitations.length, expiresAt } }, 201)
     }
 
     if (/\/api\/workspaces\/[^/]+\/events$/.test(path) && method === 'GET') {

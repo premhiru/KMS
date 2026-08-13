@@ -1,7 +1,7 @@
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS memberships (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('owner','organizer','reviewer','speaker')), created_at TEXT NOT NULL, PRIMARY KEY (workspace_id,user_id))`,
+  `CREATE TABLE IF NOT EXISTS memberships (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('owner','organizer','reviewer','speaker')), created_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (workspace_id,user_id))`,
   `CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, name TEXT NOT NULL, slug TEXT NOT NULL, cfp_open INTEGER NOT NULL DEFAULT 0 CHECK (cfp_open IN (0,1)), cfp_config TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (workspace_id,slug))`,
   `CREATE TABLE IF NOT EXISTS event_states (event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1, state_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS public_submissions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, title TEXT NOT NULL, abstract TEXT NOT NULL, speaker_name TEXT NOT NULL, speaker_email TEXT NOT NULL, track TEXT NOT NULL DEFAULT '', format TEXT NOT NULL DEFAULT '', consent INTEGER NOT NULL CHECK (consent IN (0,1)), status TEXT NOT NULL DEFAULT 'needs-review' CHECK (status IN ('needs-review','in-review','accepted','waitlisted','declined')), payload_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -36,6 +36,8 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_reviewer_invitation_event_email ON reviewer_invitation_tokens(workspace_id,event_id,reviewer_email,created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS reviewer_invitation_sessions (session_hash TEXT PRIMARY KEY, invitation_id TEXT NOT NULL UNIQUE REFERENCES reviewer_invitation_tokens(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, reviewer_email TEXT NOT NULL, reviewer_name TEXT NOT NULL DEFAULT '', expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_reviewer_invitation_sessions_event_expiry ON reviewer_invitation_sessions(workspace_id,event_id,expires_at)`,
+  `CREATE TABLE IF NOT EXISTS organizer_invitation_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL DEFAULT 'organizer' CHECK (role='organizer'), expires_at TEXT NOT NULL, grant_expires_at TEXT NOT NULL, consumed_at TEXT, consumed_by TEXT REFERENCES users(id), requested_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_organizer_invitation_workspace_expiry ON organizer_invitation_tokens(workspace_id,expires_at)`,
   `CREATE TABLE IF NOT EXISTS crm_documents (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1 CHECK (revision>0), document_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS crm_history (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, revision INTEGER NOT NULL, document_json TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'write', PRIMARY KEY (workspace_id,revision))`,
   `CREATE INDEX IF NOT EXISTS idx_crm_history_workspace_revision ON crm_history(workspace_id,revision DESC)`,
@@ -44,7 +46,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS crm_airtable_mappings (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, contact_id TEXT NOT NULL, remote_record_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (workspace_id,contact_id), UNIQUE (workspace_id,remote_record_id))`,
 ]
 
-const MIGRATION_VERSIONS = ['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm', '0007_reviewer_invitations']
+const MIGRATION_VERSIONS = ['0001_initial', '0002_integrations', '0003_operations', '0004_automation_scopes', '0005_cfp_claims', '0006_crm', '0007_reviewer_invitations', '0008_organizer_invitations']
 const BASE_MIGRATION_VERSIONS = MIGRATION_VERSIONS.slice(0, 3)
 
 const ROLE_LEVEL = { speaker: 1, reviewer: 2, organizer: 3, owner: 4 }
@@ -382,10 +384,19 @@ async function ensureSchema(env) {
           if (!(refreshed.results || []).some((column) => column.name === 'scope_key')) throw error
         }
       }
+      const membershipColumns = await env.DB.prepare(`PRAGMA table_info(memberships)`).all()
+      if (!(membershipColumns.results || []).some((column) => column.name === 'expires_at')) {
+        try { await env.DB.prepare(`ALTER TABLE memberships ADD COLUMN expires_at TEXT`).run() }
+        catch (error) {
+          const refreshed = await env.DB.prepare(`PRAGMA table_info(memberships)`).all()
+          if (!(refreshed.results || []).some((column) => column.name === 'expires_at')) throw error
+        }
+      }
       await env.DB.batch([
         env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_scope_key ON automation_runs(scope_key,kind,idempotency_key)`),
         env.DB.prepare(`CREATE TABLE IF NOT EXISTS automation_leases (run_id TEXT PRIMARY KEY REFERENCES automation_runs(id) ON DELETE CASCADE, lease_token TEXT NOT NULL, lease_expires_at TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)`),
         env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_automation_leases_expiry ON automation_leases(lease_expires_at)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_memberships_expiry ON memberships(workspace_id,expires_at)`),
         ...MIGRATION_VERSIONS.slice(3).map((version) => env.DB.prepare(`INSERT OR IGNORE INTO schema_migrations (version,applied_at) VALUES (?,?)`).bind(version, timestamp)),
       ])
     })()
@@ -475,12 +486,12 @@ async function identityAndMembership(request, env, workspaceId, minimumRole = 's
       env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) SELECT ?,?,'owner',? WHERE NOT EXISTS (SELECT 1 FROM memberships WHERE workspace_id=?)`).bind(workspaceId, user.id, timestamp, workspaceId),
     ])
   }
-  let membership = await env.DB.prepare(`SELECT role FROM memberships WHERE workspace_id=? AND user_id=?`).bind(workspaceId, user.id).first()
+  let membership = await env.DB.prepare(`SELECT role,expires_at FROM memberships WHERE workspace_id=? AND user_id=? AND (expires_at IS NULL OR expires_at>?)`).bind(workspaceId, user.id, timestamp).first()
   if (!membership) {
     const configuredOwnerEmail = String(env.BOOTSTRAP_OWNER_EMAIL || '').trim().toLowerCase()
     if (configuredOwnerEmail && user.email === configuredOwnerEmail) {
       await env.DB.prepare(`INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) VALUES (?,?,'owner',?)`).bind(workspaceId, user.id, timestamp).run()
-      membership = await env.DB.prepare(`SELECT role FROM memberships WHERE workspace_id=? AND user_id=?`).bind(workspaceId, user.id).first()
+      membership = await env.DB.prepare(`SELECT role,expires_at FROM memberships WHERE workspace_id=? AND user_id=? AND (expires_at IS NULL OR expires_at>?)`).bind(workspaceId, user.id, timestamp).first()
     }
   }
   if (!membership) throw new ApiError(403, 'WORKSPACE_FORBIDDEN', 'You are not a member of this workspace.')
@@ -791,6 +802,64 @@ function reviewerInvitationReturnUrl(request, value, token) {
   returnUrl.searchParams.delete('reviewerToken')
   returnUrl.searchParams.set('reviewerToken', token)
   return returnUrl.toString()
+}
+
+function organizerInvitationReturnUrl(request, value, token) {
+  if (typeof value !== 'string' || !value || value.length > 2_000) throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must be a same-origin URL.', { field: 'returnUrl' })
+  let returnUrl
+  try { returnUrl = new URL(value, new URL(request.url).origin) }
+  catch { throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must be a same-origin URL.', { field: 'returnUrl' }) }
+  if (returnUrl.origin !== new URL(request.url).origin) throw new ApiError(422, 'VALIDATION_ERROR', 'returnUrl must use this application origin.', { field: 'returnUrl' })
+  returnUrl.username = ''
+  returnUrl.password = ''
+  returnUrl.searchParams.delete('organizerToken')
+  returnUrl.searchParams.set('organizerToken', token)
+  returnUrl.hash = '#/dashboard'
+  return returnUrl.toString()
+}
+
+async function organizerInvitations(request, env, requestId, workspaceId) {
+  if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'POST' })
+  const access = await identityAndMembership(request, env, workspaceId, 'owner')
+  const body = await jsonBody(request, 20_000)
+  const count = Number(body.count)
+  const accessDays = body.accessDays === undefined ? 30 : Number(body.accessDays)
+  if (!Number.isSafeInteger(count) || count < 1 || count > 10) throw new ApiError(422, 'VALIDATION_ERROR', 'count must be an integer from 1 to 10.', { field: 'count' })
+  if (!Number.isSafeInteger(accessDays) || accessDays < 1 || accessDays > 60) throw new ApiError(422, 'VALIDATION_ERROR', 'accessDays must be an integer from 1 to 60.', { field: 'accessDays' })
+  organizerInvitationReturnUrl(request, body.returnUrl, 'validation-placeholder')
+  const createdAt = now()
+  const expiresAt = new Date(Date.parse(createdAt) + accessDays * 86_400_000).toISOString()
+  const invitations = []
+  const statements = []
+  for (let index = 0; index < count; index += 1) {
+    const rawToken = randomOpaqueToken()
+    const tokenHash = await sha256(rawToken)
+    const invitationId = id('organizer-invite')
+    statements.push(env.DB.prepare(`INSERT INTO organizer_invitation_tokens (id,workspace_id,token_hash,role,expires_at,grant_expires_at,requested_by,created_at) VALUES (?,?,?,'organizer',?,?,?,?)`).bind(invitationId, workspaceId, tokenHash, expiresAt, expiresAt, access.user.id, createdAt))
+    invitations.push({ id: invitationId, url: organizerInvitationReturnUrl(request, body.returnUrl, rawToken), expiresAt })
+  }
+  await env.DB.batch(statements)
+  await audit(env, workspaceId, access.user.id, 'organizer.invitations.created', 'workspace', workspaceId, { count, expiresAt }, requestId)
+  return json({ data: { invitations, count, expiresAt } }, 201, request, env, requestId)
+}
+
+async function redeemOrganizerInvitation(request, env, requestId, workspaceId) {
+  if (request.method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', undefined, { Allow: 'GET' })
+  const token = new URL(request.url).searchParams.get('token') || ''
+  if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new ApiError(401, 'ORGANIZER_INVITATION_INVALID_OR_EXPIRED', 'This organizer invitation is invalid, expired, or already used.')
+  const user = await authenticatedUser(request, env)
+  const tokenHash = await sha256(token)
+  const consumedAt = now()
+  const invitation = await env.DB.prepare(`SELECT id,grant_expires_at FROM organizer_invitation_tokens WHERE workspace_id=? AND token_hash=? AND consumed_at IS NULL AND expires_at>?`).bind(workspaceId, tokenHash, consumedAt).first()
+  if (!invitation) throw new ApiError(401, 'ORGANIZER_INVITATION_INVALID_OR_EXPIRED', 'This organizer invitation is invalid, expired, or already used.')
+  const results = await env.DB.batch([
+    env.DB.prepare(`UPDATE organizer_invitation_tokens SET consumed_at=?,consumed_by=? WHERE id=? AND workspace_id=? AND token_hash=? AND consumed_at IS NULL AND expires_at>?`).bind(consumedAt, user.id, invitation.id, workspaceId, tokenHash, consumedAt),
+    env.DB.prepare(`INSERT INTO memberships (workspace_id,user_id,role,created_at,expires_at) SELECT ?,?,'organizer',?,? WHERE EXISTS (SELECT 1 FROM organizer_invitation_tokens WHERE id=? AND consumed_by=? AND consumed_at=?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=CASE WHEN memberships.role='owner' THEN 'owner' ELSE 'organizer' END,expires_at=CASE WHEN memberships.role='owner' THEN memberships.expires_at ELSE excluded.expires_at END`).bind(workspaceId, user.id, consumedAt, invitation.grant_expires_at, invitation.id, user.id, consumedAt),
+  ])
+  if (Number(results[0]?.meta?.changes || 0) !== 1) throw new ApiError(401, 'ORGANIZER_INVITATION_INVALID_OR_EXPIRED', 'This organizer invitation is invalid, expired, or already used.')
+  const membership = await env.DB.prepare(`SELECT role,expires_at FROM memberships WHERE workspace_id=? AND user_id=?`).bind(workspaceId, user.id).first()
+  await audit(env, workspaceId, user.id, 'organizer.invitation.redeemed', 'organizer_invitation', invitation.id, { expiresAt: membership?.expires_at ?? null }, requestId)
+  return json({ data: { user, role: membership?.role || 'organizer', expiresAt: membership?.expires_at ?? null } }, 200, request, env, requestId)
 }
 
 async function enforceReviewerInvitationRateLimit(request, env, workspaceId, eventId, email, actorId) {
@@ -1327,7 +1396,7 @@ async function members(request, env, requestId, workspaceId, memberUserId) {
     const timestamp = now()
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO users (id,email,name,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET email=excluded.email,name=excluded.name,updated_at=excluded.updated_at`).bind(body.userId, body.email.toLowerCase(), String(body.name || '').slice(0, 120), timestamp, timestamp),
-      env.DB.prepare(`INSERT INTO memberships (workspace_id,user_id,role,created_at) VALUES (?,?,?,?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role`).bind(workspaceId, body.userId, body.role, timestamp),
+      env.DB.prepare(`INSERT INTO memberships (workspace_id,user_id,role,created_at,expires_at) VALUES (?,?,?,?,NULL) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,expires_at=NULL`).bind(workspaceId, body.userId, body.role, timestamp),
     ])
     await audit(env, workspaceId, access.user.id, 'membership.upserted', 'user', body.userId, { role: body.role }, requestId)
     return json({ data: { userId: body.userId, role: body.role } }, 201, request, env, requestId)
@@ -1336,7 +1405,7 @@ async function members(request, env, requestId, workspaceId, memberUserId) {
     const body = await jsonBody(request, 10_000)
     if (!ALLOWED_ROLES.has(body.role)) throw new ApiError(422, 'VALIDATION_ERROR', 'A valid role is required.', { field: 'role' })
     if (memberUserId === access.user.id && body.role !== 'owner') throw new ApiError(409, 'LAST_OWNER_PROTECTION', 'Owners cannot demote themselves.')
-    const result = await env.DB.prepare(`UPDATE memberships SET role=? WHERE workspace_id=? AND user_id=? RETURNING user_id`).bind(body.role, workspaceId, memberUserId).first()
+    const result = await env.DB.prepare(`UPDATE memberships SET role=?,expires_at=CASE WHEN ?='owner' THEN NULL ELSE expires_at END WHERE workspace_id=? AND user_id=? RETURNING user_id`).bind(body.role, body.role, workspaceId, memberUserId).first()
     if (!result) throw new ApiError(404, 'MEMBER_NOT_FOUND', 'Member was not found.')
     await audit(env, workspaceId, access.user.id, 'membership.role.updated', 'user', memberUserId, { role: body.role }, requestId)
     return json({ data: { userId: memberUserId, role: body.role } }, 200, request, env, requestId)
@@ -2650,6 +2719,8 @@ async function routeApi(request, env, requestId) {
 
   let match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)\/claim$/)
   if (match) return publicCfpClaim(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+  match = url.pathname.match(/^\/api\/public\/organizer-invitations\/([^/]+)$/)
+  if (match) return redeemOrganizerInvitation(request, env, requestId, decodeURIComponent(match[1]))
   match = url.pathname.match(/^\/api\/public\/reviewer-invitations\/([^/]+)\/([^/]+)$/)
   if (match) return redeemReviewerInvitation(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]))
   match = url.pathname.match(/^\/api\/public\/cfp\/([^/]+)\/([^/]+)$/)
@@ -2662,6 +2733,8 @@ async function routeApi(request, env, requestId) {
   if (match) return publicSpeakerHeadshot(request, env, requestId, decodeURIComponent(match[1]), decodeURIComponent(match[2]), decodeURIComponent(match[3]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/session$/)
   if (match) return workspaceSession(request, env, requestId, decodeURIComponent(match[1]))
+  match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/organizer-invitations$/)
+  if (match) return organizerInvitations(request, env, requestId, decodeURIComponent(match[1]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events$/)
   if (match) return workspaceEvents(request, env, requestId, decodeURIComponent(match[1]))
   match = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/crm$/)

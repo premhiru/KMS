@@ -7,6 +7,8 @@ import type {
   IntegrationRunStatus,
   IntegrationStatus,
   MemberMutationReceipt,
+  OrganizerInvitationBatch,
+  OrganizerInvitationRedemption,
   AcceleventsSyncReceipt,
   PublicCfpMetadata,
   PublicCfpClaimReceipt,
@@ -280,6 +282,44 @@ export function parseMemberReceipt(value: unknown): MemberMutationReceipt {
   const issues: string[] = []
   if (!isRecord(data)) throw new ResponseValidationError(['member receipt data must be an object.'])
   return finish(issues, { userId: stringField(data, 'userId', issues), role: role(data.role, issues) })
+}
+
+export function parseOrganizerInvitationBatch(value: unknown): OrganizerInvitationBatch {
+  const data = unwrapData(value)
+  if (!isRecord(data) || !Array.isArray(data.invitations)) throw new ResponseValidationError(['organizer invitation batch data must contain invitations.'])
+  const issues: string[] = []
+  const invitations = data.invitations.map((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`invitations[${index}] must be an object.`)
+      return { id: '', url: '', expiresAt: '' }
+    }
+    return {
+      id: stringField(item, 'id', issues),
+      url: stringField(item, 'url', issues),
+      expiresAt: stringField(item, 'expiresAt', issues),
+    }
+  })
+  const count = numberField(data, 'count', issues)
+  const expiresAt = stringField(data, 'expiresAt', issues)
+  if (count !== invitations.length) issues.push('count must match invitations length.')
+  if (issues.length) throw new ResponseValidationError(issues)
+  return { invitations, count, expiresAt }
+}
+
+export function parseOrganizerInvitationRedemption(value: unknown): OrganizerInvitationRedemption {
+  const data = unwrapData(value)
+  if (!isRecord(data) || !isRecord(data.user)) throw new ResponseValidationError(['organizer invitation redemption data must contain a user.'])
+  const issues: string[] = []
+  const role = stringField(data, 'role', issues)
+  if (role !== 'owner' && role !== 'organizer') issues.push('role must be owner or organizer.')
+  const expiresAt = data.expiresAt === null ? null : stringField(data, 'expiresAt', issues)
+  const user = {
+    id: stringField(data.user, 'id', issues),
+    email: stringField(data.user, 'email', issues),
+    name: stringField(data.user, 'name', issues, true),
+  }
+  if (issues.length) throw new ResponseValidationError(issues)
+  return { user, role: role as 'owner' | 'organizer', expiresAt }
 }
 
 export function parseAudit(value: unknown): AuditEntry[] {

@@ -24,6 +24,8 @@ Program feeds are anonymous, expose only accepted submissions attached to publis
 ## Workspace and state
 
 - `GET /api/workspaces/:workspaceId/session` returns `{ user, role }` for a member.
+- `POST /api/workspaces/:workspaceId/organizer-invitations` is owner-only and accepts `{ count, accessDays, returnUrl }`. It creates at most ten high-entropy, one-time evaluator links and returns their raw URLs exactly once. Only token hashes are stored. `returnUrl` must be same-origin and the temporary access duration is bounded to 1–60 days.
+- `GET /api/public/organizer-invitations/:workspaceId?token=...` requires trusted hosting authentication, atomically consumes one unexpired token, and binds that verified identity to a temporary organizer membership. The token is removed from the browser URL after redemption; replay and expired tokens fail closed. Existing owners are never demoted or made temporary.
 - `GET /api/workspaces/:workspaceId/events` is organizer-only and returns `{ events: [{ id, name, slug, startAt, endAt, revision, createdAt, updatedAt }] }`.
 - `POST /api/workspaces/:workspaceId/events` is organizer-only. Body: `{ state: AppState }`. `state.event.id/name/slug` identify the new event; the server rejects duplicate workspace IDs/slugs and atomically creates event state and its first history snapshot at revision 1.
 - `GET /api/workspaces/:workspaceId/events/:eventId/state` is organizer-only and returns `{ event, revision, state, ingestion, updatedAt }`. It deterministically imports/reconciles normalized CFP records.
@@ -87,7 +89,7 @@ The outbound Airtable table defaults to `Speaker CRM Contacts` (`AIRTABLE_TABLE_
 - Core: `DB`, `FILES`, `ALLOWED_ORIGINS`, `ALLOW_LOCAL_AUTH`, canonical `BOOTSTRAP_OWNER_EMAIL`, optional informational `BOOTSTRAP_OWNER_ID`.
 - CFP: `CFP_RATE_LIMIT`, `CFP_RATE_WINDOW_SECONDS`.
 - CFP proposal access: `CFP_CLAIM_RATE_LIMIT` (default 5), `CFP_CLAIM_RATE_WINDOW_SECONDS` (default 900), `CFP_CLAIM_TOKEN_SECONDS` (default 900, bounded 300–3600), `CFP_CLAIM_SESSION_SECONDS` (default 604800, bounded 3600–2592000). Claim email requires `RESEND_API_KEY` and `EMAIL_FROM`; responses remain generic when the provider is absent or fails.
-- Invitations: `REVIEWER_INVITE_RATE_LIMIT` (default 10), `REVIEWER_INVITE_RATE_WINDOW_SECONDS` (default 900), `REVIEWER_INVITE_TOKEN_SECONDS` (default 172800), `REVIEWER_INVITE_SESSION_SECONDS` (default 604800), and `SPEAKER_INVITE_TOKEN_SECONDS` (default 172800). Raw link/session tokens are never stored; links are one-time and event scoped.
+- Invitations: `REVIEWER_INVITE_RATE_LIMIT` (default 10), `REVIEWER_INVITE_RATE_WINDOW_SECONDS` (default 900), `REVIEWER_INVITE_TOKEN_SECONDS` (default 172800), `REVIEWER_INVITE_SESSION_SECONDS` (default 604800), and `SPEAKER_INVITE_TOKEN_SECONDS` (default 172800). Raw link/session tokens are never stored; links are one-time and event scoped. Owner-generated evaluator organizer links use the bounded duration supplied at creation and do not require an environment secret.
 - Assets: `MAX_ASSET_BYTES` (10 MB), `MAX_USER_EVENT_ASSET_BYTES` (50 MB), `MAX_EVENT_ASSET_BYTES` (250 MB), `MAX_EVENT_ASSET_COUNT` (2000), `ALLOWED_ASSET_TYPES`.
 - Email: `RESEND_API_KEY`, `EMAIL_FROM`.
 - Accelevents: `ACCELEVENTS_API_KEY`, `ACCELEVENTS_EVENT_URL` (slug), optional HTTPS `ACCELEVENTS_API_BASE_URL` (defaults to `https://api.accelevents.com`).

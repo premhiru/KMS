@@ -205,6 +205,28 @@ export interface MemberMutationReceipt {
   role: WorkspaceRole
 }
 
+export interface OrganizerInvitationInput {
+  count: number
+  accessDays: number
+  returnUrl: string
+}
+
+export interface OrganizerInvitationLink {
+  id: Id
+  url: string
+  expiresAt: string
+}
+
+export interface OrganizerInvitationBatch {
+  invitations: OrganizerInvitationLink[]
+  count: number
+  expiresAt: string
+}
+
+export interface OrganizerInvitationRedemption extends WorkspaceSession {
+  expiresAt: string | null
+}
+
 export interface AuditEntry {
   id: Id
   actorUserId: Id | null
