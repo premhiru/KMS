@@ -3,6 +3,7 @@ import { ArrowRight, CalendarClock, CheckCircle2, KeyRound, Route, Sparkles, Use
 import { createSpeaker, createSubmission, nowIso, useApp } from '../../core'
 import type { CfpQuestion, Id } from '../../domain'
 import './submissions.css'
+import { normalizeCfpFormats } from './cfp-formats'
 
 const fallbackCategories = [
   { value: 'case-study', label: 'Practical case study', trackHints: ['Applied AI', 'Product & design'] },
@@ -44,7 +45,8 @@ export function PublicCfp({ onSubmitted }: PublicCfpProps) {
   const { state, dispatch, persistenceMode, submitCfp, requestCfpClaim, verifyCfpClaim } = useApp()
   const cfp = state.event.cfp
   const categories = cfp?.routingRules?.filter((rule) => rule.enabled).map((rule) => ({ value: rule.category, label: rule.label, trackHints: [rule.track] })) ?? fallbackCategories
-  const formats = cfp?.formats?.length ? cfp.formats : [{ name: 'Talk', durationMinutes: 30 }, { name: 'Workshop', durationMinutes: 60 }, { name: 'Panel', durationMinutes: 45 }, { name: 'Lightning talk', durationMinutes: 10 }]
+  const configuredFormats = normalizeCfpFormats(cfp?.formats)
+  const formats = configuredFormats.length ? configuredFormats : [{ name: 'Talk', durationMinutes: 30 }, { name: 'Workshop', durationMinutes: 60 }, { name: 'Panel', durationMinutes: 45 }, { name: 'Lightning talk', durationMinutes: 10 }]
   const defaultTrack = state.event.tracks[0] ?? 'General'
   const tracks = state.event.tracks.length > 0 ? state.event.tracks : [defaultTrack]
   const [speaker, setSpeaker] = useState<SpeakerDraft>(blankSpeaker)

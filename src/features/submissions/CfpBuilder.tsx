@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { Check, Copy, GripVertical, Plus, Trash2 } from 'lucide-react'
 import { createId, nowIso, useApp } from '../../core'
 import type { CfpConfig, CfpFieldType, CfpQuestion, CfpRoutingRule } from '../../domain'
+import { normalizeCfpFormats } from './cfp-formats'
 import './submissions.css'
 
 const defaultConfig: CfpConfig = {
@@ -53,7 +54,8 @@ export function CfpBuilder({ publicPath }: CfpBuilderProps) {
   const [welcomeMessage, setWelcomeMessage] = useState(initial.welcomeMessage)
   const [thankYouMessage, setThankYouMessage] = useState(initial.thankYouMessage)
   const [questions, setQuestions] = useState<CfpQuestion[]>(initial.questions)
-  const [formats, setFormats] = useState(initial.formats ?? defaultConfig.formats ?? [])
+  const normalizedInitialFormats = normalizeCfpFormats(initial.formats)
+  const [formats, setFormats] = useState(normalizedInitialFormats.length ? normalizedInitialFormats : defaultConfig.formats ?? [])
   const [routingRules, setRoutingRules] = useState<CfpRoutingRule[]>(initial.routingRules ?? [])
   const [version, setVersion] = useState(initial.version ?? 0)
   const [publishedAt, setPublishedAt] = useState(initial.publishedAt)
