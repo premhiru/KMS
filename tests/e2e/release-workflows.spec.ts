@@ -96,7 +96,8 @@ test('speaker invitation hands an organizer browser into an editable scoped port
 
   // Replaying the consumed link must not fall back to the extant speaker session.
   await page.goto(inviteLink)
-  await expect(page.getByRole('heading', { name: 'Organizer sign-in required' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Speaker portal access required' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Request a new speaker access link' })).toHaveAttribute('href', '#/cfp')
   await expect(page.getByRole('heading', { name: `Welcome, ${invitedSpeaker.firstName}` })).toHaveCount(0)
   expect(api.claimVerifications).toHaveLength(2)
 })
@@ -105,7 +106,8 @@ test('invalid speaker claim fails closed instead of falling back to an organizer
   const api = await installApiStub(page, { role: 'owner' })
   await page.goto('/?claimToken=invalid-speaker-claim#/portal')
 
-  await expect(page.getByRole('heading', { name: 'Organizer sign-in required' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Speaker portal access required' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Request a new speaker access link' })).toHaveAttribute('href', '#/cfp')
   await expect(page.locator('#organizer-navigation')).toHaveCount(0)
   await expect(page.getByText('Read-only participant preview')).toHaveCount(0)
   expect(api.claimVerifications).toEqual(['invalid-speaker-claim'])

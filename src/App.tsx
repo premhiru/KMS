@@ -215,6 +215,9 @@ export default function App() {
   }
 
   if (syncStatus === 'unauthorized' || persistenceMode === 'public-readonly') {
+    if (route === 'portal') {
+      return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Speaker portal access required</h1><p>Your invitation link may be invalid, expired, or already used. Request a fresh secure access link using the email address attached to your proposal.</p><a className="button primary" href="#/cfp">Request a new speaker access link</a></main>
+    }
     const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`)
     return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Organizer sign-in required</h1><p>This workspace contains private speaker and review data.</p><a className="button primary" href={`/signin-with-chatgpt?return_to=${returnTo}`}>Sign in with ChatGPT</a></main>
   }
