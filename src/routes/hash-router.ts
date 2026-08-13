@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react'
 
-export type AppRoute = 'dashboard' | 'submissions' | 'cfp' | 'cfp-builder' | 'reviews' | 'speakers' | 'crm' | 'deliverables' | 'agenda' | 'communications' | 'history' | 'embeds' | 'portal' | 'event' | 'docs' | 'settings' | 'admin'
+export type AppRoute = 'welcome' | 'dashboard' | 'submissions' | 'cfp' | 'cfp-builder' | 'reviews' | 'speakers' | 'crm' | 'deliverables' | 'agenda' | 'communications' | 'history' | 'embeds' | 'portal' | 'event' | 'docs' | 'settings' | 'admin'
 
-const validRoutes = new Set<AppRoute>(['dashboard', 'submissions', 'cfp', 'cfp-builder', 'reviews', 'speakers', 'crm', 'deliverables', 'agenda', 'communications', 'history', 'embeds', 'portal', 'event', 'docs', 'settings', 'admin'])
+const validRoutes = new Set<AppRoute>(['welcome', 'dashboard', 'submissions', 'cfp', 'cfp-builder', 'reviews', 'speakers', 'crm', 'deliverables', 'agenda', 'communications', 'history', 'embeds', 'portal', 'event', 'docs', 'settings', 'admin'])
+
+export function routeFromHash(hash: string): AppRoute {
+  const route = hash.replace(/^#\/?/, '').split('/')[0] as AppRoute
+  if (!route) return 'welcome'
+  return validRoutes.has(route) ? route : 'dashboard'
+}
 
 function currentRoute(): AppRoute {
-  const route = window.location.hash.replace(/^#\/?/, '').split('/')[0] as AppRoute
-  return validRoutes.has(route) ? route : 'dashboard'
+  return routeFromHash(window.location.hash)
 }
 
 export function useHashRoute() {

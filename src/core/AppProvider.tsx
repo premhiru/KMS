@@ -18,6 +18,8 @@ import { appReducer, type AppAction } from './reducer'
 import { applyReviewerReceipt } from './review-reconcile'
 import { exportAppState, importAppState, loadAppState, resetAppState, saveAppState } from './storage'
 import { redeemSpeakerClaimOnce, speakerClaimToken, stripSpeakerClaimFromUrl } from './speaker-claim-handoff'
+import { createPublicWelcomeState } from './public-welcome-state'
+import { routeFromHash, type AppRoute } from '../routes/hash-router'
 
 export interface AppProviderProps {
   children: ReactNode
@@ -51,8 +53,11 @@ function queueToState(queue: ReviewerQueue): AppState {
 }
 
 export function AppProvider({ children, initialState, storage }: AppProviderProps) {
+  const [providerRoute, setProviderRoute] = useState<AppRoute>(() => routeFromHash(window.location.hash))
+  const welcomeRoute = providerRoute === 'welcome'
   const seedState = useMemo(() => initialState ?? loadAppState(storage), [initialState, storage])
-  const [state, reducerDispatch] = useReducer(appReducer, seedState)
+  const initialProviderState = useMemo(() => welcomeRoute ? createPublicWelcomeState() : seedState, [seedState, welcomeRoute])
+  const [state, reducerDispatch] = useReducer(appReducer, initialProviderState)
   const [persistenceError, setPersistenceError] = useState<string>()
   const remote = import.meta.env.PROD || import.meta.env.VITE_REMOTE_API === 'true'
   const api = useMemo(() => remote ? new OpenSpeakerApiClient({
@@ -60,13 +65,13 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     eventId: new URLSearchParams(window.location.search).get('eventId') || import.meta.env.VITE_EVENT_ID || seedState.event.id,
     eventSlug: new URLSearchParams(window.location.search).get('eventSlug') || import.meta.env.VITE_EVENT_SLUG || seedState.event.slug,
   }) : undefined, [remote, seedState.event.id, seedState.event.slug])
-  const [persistenceMode, setPersistenceMode] = useState<'local' | 'remote' | 'public-readonly' | 'static-readonly'>(remote ? 'remote' : 'local')
-  const [syncStatus, setSyncStatus] = useState<'loading' | 'saved' | 'saving' | 'error' | 'unauthorized'>(remote ? 'loading' : 'saved')
+  const [persistenceMode, setPersistenceMode] = useState<'local' | 'remote' | 'public-readonly' | 'static-readonly'>(welcomeRoute ? 'static-readonly' : remote ? 'remote' : 'local')
+  const [syncStatus, setSyncStatus] = useState<'loading' | 'saved' | 'saving' | 'error' | 'unauthorized'>(welcomeRoute ? 'saved' : remote ? 'loading' : 'saved')
   const [session, setSession] = useState<WorkspaceSession>()
   const revisionRef = useRef<number | null>(null)
-  const hydratedRef = useRef(!remote)
+  const hydratedRef = useRef(welcomeRoute || !remote)
   const pendingStateRef = useRef(state)
-  const savedStateRef = useRef<AppState | null>(remote ? null : state)
+  const savedStateRef = useRef<AppState | null>(welcomeRoute || !remote ? state : null)
   const savingRef = useRef(false)
   const reviewerSavingRef = useRef(false)
   const pollingRef = useRef(false)
@@ -84,6 +89,12 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
     reducerDispatch(action)
   }, [])
 
+  useEffect(() => {
+    const updateRoute = () => setProviderRoute(routeFromHash(window.location.hash))
+    window.addEventListener('hashchange', updateRoute)
+    return () => window.removeEventListener('hashchange', updateRoute)
+  }, [])
+
   const acceptLoaded = useCallback((nextState: AppState, revision: number) => {
     revisionRef.current = revision
     savedStateRef.current = nextState
@@ -95,11 +106,24 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
   }, [])
 
   useEffect(() => {
-    if (!api) return
+    if (welcomeRoute) {
+      setSession(undefined)
+      setPersistenceMode('static-readonly')
+      acceptLoaded(createPublicWelcomeState(), 0)
+      return
+    }
+    if (!api) {
+      setPersistenceMode('local')
+      setSyncStatus('saved')
+      if (pendingStateRef.current.event.id === 'public-welcome') acceptLoaded(seedState, 0)
+      return
+    }
+    setPersistenceMode('remote')
+    setSyncStatus('loading')
     const controller = new AbortController()
-    const docsRoute = window.location.hash.startsWith('#/docs')
-    const cfpRoute = window.location.hash.startsWith('#/cfp')
-    const eventRoute = window.location.hash.startsWith('#/event')
+    const docsRoute = providerRoute === 'docs'
+    const cfpRoute = providerRoute === 'cfp'
+    const eventRoute = providerRoute === 'event'
     const initialUrl = new URL(window.location.href)
     const portalClaimToken = portalClaimRef.current
     // Tokens are secrets and must leave the address bar immediately. A token on
@@ -207,7 +231,7 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
       }
     })()
     return () => controller.abort()
-  }, [acceptLoaded, api, seedState])
+  }, [acceptLoaded, api, providerRoute, seedState, welcomeRoute])
 
   useEffect(() => {
     if (!api || !hydratedRef.current || persistenceMode === 'static-readonly') return
@@ -259,6 +283,7 @@ export function AppProvider({ children, initialState, storage }: AppProviderProp
 
   useEffect(() => {
     pendingStateRef.current = state
+    if (persistenceMode === 'static-readonly') return
     if (!api) {
       const result = saveAppState(state, storage)
       setPersistenceError(result.ok ? undefined : result.error)

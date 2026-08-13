@@ -37,6 +37,7 @@ import { EmbedManager } from './features/embeds'
 import { ContentHistory } from './features/history'
 import { SpeakerPortal } from './features/portal'
 import { PublicEvent } from './features/public-event'
+import { WelcomeGateway } from './features/welcome'
 import { EventSettings } from './features/settings/EventSettings'
 import { OrganizerSpeakers } from './features/speakers'
 import { CfpBuilder } from './features/submissions/CfpBuilder'
@@ -79,6 +80,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
 ]
 
 const routeTitles: Record<AppRoute, string> = {
+  welcome: 'Welcome',
   dashboard: 'Overview',
   submissions: 'Submissions',
   cfp: 'Public call for proposals',
@@ -193,6 +195,10 @@ export default function App() {
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [mobileNavigation, sidebarOpen])
+
+  if (route === 'welcome') {
+    return <WelcomeGateway />
+  }
 
   if (syncStatus === 'loading') {
     return <main className="public-surface app-boot"><Sparkles aria-hidden="true" /><h1>Opening OpenSpeaker</h1><p>Loading the shared event workspace…</p></main>

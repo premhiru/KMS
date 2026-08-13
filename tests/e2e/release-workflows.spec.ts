@@ -42,7 +42,7 @@ test('organizer can inspect and non-destructively restore content history', asyn
   await expect(page.getByRole('dialog', { name: 'Restore revision 6?' })).toBeVisible()
   await page.getByLabel(/Reason for restore/).fill('Restore evaluator-approved session copy')
   await page.getByRole('button', { name: 'Restore revision 6', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText(/restored as new revision/i)
+  await expect(page.locator('.history-notice[role="status"]')).toContainText(/restored as new revision/i)
   await expectNoSeriousAccessibilityViolations(page)
 })
 

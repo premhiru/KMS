@@ -17,6 +17,7 @@ export interface ApiStubOptions {
 }
 
 export interface ApiStubControl {
+  apiRequests: Array<{ method: string; path: string }>
   readonly state: AppState
   readonly revision: number
   stateWrites: AppState[]
@@ -82,6 +83,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   const role = options.role ?? 'owner'
   let email = options.email ?? (role === 'reviewer' ? 'sarah@example.com' : role === 'speaker' ? 'priya@example.com' : 'owner@example.com')
   const stateWrites: AppState[] = []
+  const apiRequests: Array<{ method: string; path: string }> = []
   const portalWrites: Array<Record<string, unknown>> = []
   const reviewWrites: Array<Record<string, unknown>> = []
   const cfpSubmissions: Array<Record<string, unknown>> = []
@@ -117,6 +119,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
   }
 
   const control: ApiStubControl = {
+    apiRequests,
     get state() { return currentState },
     get revision() { return revision },
     stateWrites,
@@ -143,6 +146,7 @@ export async function installApiStub(page: Page, options: ApiStubOptions = {}): 
     const url = new URL(request.url())
     const path = url.pathname
     const method = request.method()
+    apiRequests.push({ method, path })
 
     if (options.hydrationFailure && path.endsWith('/session')) return error(route, 503, 'DATABASE_UNAVAILABLE', 'The shared workspace is temporarily unavailable.')
 
