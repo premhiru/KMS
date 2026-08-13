@@ -66,6 +66,10 @@ After deployment, verify:
 2. The configured owner can open the organizer workspace.
 3. Anonymous visitors can read the CFP and public program.
 4. A reversible proposal submission persists and appears to the organizer.
+
+### Optional evaluator handoff page
+
+For a private, branded evaluator-access page without committing raw invitation links, configure `EVALUATOR_HANDOFF_TOKEN`, `EVALUATOR_ORGANIZER_LINKS_JSON`, and `EVALUATOR_ACCESS_EXPIRES_AT` in the hosting environment. The page is available at `/evaluator-access/<EVALUATOR_HANDOFF_TOKEN>`, validates that all ten destination links are same-origin organizer invitations, and returns `no-store`, `no-referrer`, and `noindex` security headers. Treat the page URL as a private capability and rotate or remove the environment values after evaluation.
 5. A reviewer sees only assigned records.
 6. A speaker can edit their own profile and upload/download a private file.
 7. JSON, XML, and iCalendar feeds return native MIME types.

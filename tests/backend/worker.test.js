@@ -133,6 +133,29 @@ describe('trusted forwarded identity', () => {
   })
 })
 
+describe('private evaluator handoff page', () => {
+  it('renders ten branded links only for the private capability URL and prevents indexing/caching', async () => {
+    const DB = new D1Mock()
+    const pageToken = 'handoff-page-token-123456789012345678901234567890'
+    const links = Array.from({ length: 10 }, (_, index) => `https://app.test/?organizerToken=evaluator-token-${String(index + 1).padStart(28, '0')}#/dashboard`)
+    const env = { DB, EVALUATOR_HANDOFF_TOKEN: pageToken, EVALUATOR_ORGANIZER_LINKS_JSON: JSON.stringify(links), EVALUATOR_ACCESS_EXPIRES_AT: '2026-09-12T02:28:37.000Z' }
+    const missing = await fetchHandler(new Request('https://app.test/evaluator-access/wrong-token-123456789012345678901234567890'), env)
+    expect(missing.status).toBe(404)
+    const response = await fetchHandler(new Request(`https://app.test/evaluator-access/${pageToken}`), env)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toContain('no-store')
+    expect(response.headers.get('x-robots-tag')).toContain('noindex')
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+    const html = await response.text()
+    expect(html).toContain('OpenSpeaker')
+    expect(html).toContain('Private evaluation handoff')
+    expect(html).toContain('Evaluator access 10')
+    expect(html).toContain(links[0].replaceAll('&', '&amp;'))
+    expect(html).not.toContain('EVALUATOR_ORGANIZER_LINKS_JSON')
+    DB.database.close()
+  })
+})
+
 describe('public state projection', () => {
   it('includes only published accepted sessions and removes private operational data', () => {
     const state = {

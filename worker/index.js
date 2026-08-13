@@ -2784,8 +2784,45 @@ async function routeApi(request, env, requestId) {
   throw new ApiError(404, 'API_ROUTE_NOT_FOUND', 'API route was not found.')
 }
 
+function htmlEscape(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character])
+}
+
+function secretMatches(left, right) {
+  const leftBytes = new TextEncoder().encode(String(left || ''))
+  const rightBytes = new TextEncoder().encode(String(right || ''))
+  if (leftBytes.length !== rightBytes.length || leftBytes.length === 0) return false
+  let difference = 0
+  for (let index = 0; index < leftBytes.length; index += 1) difference |= leftBytes[index] ^ rightBytes[index]
+  return difference === 0
+}
+
+function evaluatorHandoffPage(request, env, suppliedToken) {
+  const notFound = () => new Response('Not found', { status: 404, headers: { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' } })
+  if (!secretMatches(suppliedToken, env.EVALUATOR_HANDOFF_TOKEN)) return notFound()
+  let links
+  try { links = JSON.parse(env.EVALUATOR_ORGANIZER_LINKS_JSON || '[]') }
+  catch { return notFound() }
+  const origin = new URL(request.url).origin
+  if (!Array.isArray(links) || links.length !== 10 || !links.every((value) => {
+    try {
+      const link = new URL(value)
+      return link.origin === origin && link.searchParams.has('organizerToken') && link.hash === '#/dashboard'
+    } catch { return false }
+  })) return notFound()
+  const expiresAt = validIsoDate(env.EVALUATOR_ACCESS_EXPIRES_AT) ? env.EVALUATOR_ACCESS_EXPIRES_AT : ''
+  const cards = links.map((link, index) => `<a class="access-card" href="${htmlEscape(link)}" rel="noreferrer"><span class="number">${String(index + 1).padStart(2, '0')}</span><span><strong>Evaluator access ${index + 1}</strong><small>One-time organizer invitation</small></span><span class="arrow" aria-hidden="true">&#8594;</span></a>`).join('')
+  const expiry = expiresAt ? `<p class="expiry">Available until <strong>${htmlEscape(new Date(expiresAt).toUTCString())}</strong></p>` : ''
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><title>OpenSpeaker evaluator access</title><style>
+:root{color-scheme:light;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#242330;background:#f8f7fb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% 4%,#eeeaff 0,transparent 29rem),linear-gradient(180deg,#fbfafc 0,#f5f3fa 100%)}.shell{max-width:1120px;margin:auto;padding:32px 24px 56px}.brand{display:flex;align-items:center;gap:11px;color:#242330;text-decoration:none}.mark{display:grid;place-items:center;width:38px;height:38px;border-radius:11px;background:#6558d3;color:#fff;font-weight:850;letter-spacing:-.04em}.brand span{display:grid}.brand strong{font-size:15px}.brand small{color:#5f5b68;font-size:11px}.hero{display:grid;grid-template-columns:1.25fr .75fr;gap:28px;align-items:end;padding:72px 0 36px;border-bottom:1px solid #dedbe7}.eyebrow{color:#6558d3;font-size:11px;font-weight:850;letter-spacing:.13em;text-transform:uppercase;margin:0 0 14px}.hero h1{font-size:clamp(2.4rem,7vw,5.2rem);letter-spacing:-.065em;line-height:.94;margin:0;max-width:760px}.hero h1 em{color:#6558d3;font-style:normal}.lead{color:#5f5b68;font-size:17px;line-height:1.65;margin:0 0 10px}.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid #d9d4ef;border-radius:999px;background:#f2effc;color:#514a70;font-size:12px;font-weight:750;padding:8px 11px}.badge:before{content:"";width:7px;height:7px;border-radius:50%;background:#24a06b}.content{padding-top:34px}.content-head{display:flex;gap:18px;align-items:end;justify-content:space-between;margin-bottom:18px}.content h2{font-size:24px;letter-spacing:-.035em;margin:0 0 5px}.content-head p,.expiry{color:#625e70;font-size:13px;margin:0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.access-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px;min-height:82px;padding:15px 17px;border:1px solid #e1dfea;border-radius:14px;background:#fff;color:#242330;text-decoration:none;box-shadow:0 8px 28px rgba(54,47,91,.055);transition:transform .16s,border-color .16s,box-shadow .16s}.access-card:hover,.access-card:focus-visible{transform:translateY(-2px);border-color:#9b91e3;box-shadow:0 13px 32px rgba(54,47,91,.11);outline:0}.number{display:grid;place-items:center;width:39px;height:39px;border-radius:10px;background:#f0edfc;color:#6558d3;font-size:12px;font-weight:850}.access-card span:nth-child(2){display:grid;gap:4px}.access-card strong{font-size:14px}.access-card small{color:#686475;font-size:11px}.arrow{color:#6558d3;font-size:21px}.instructions{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px}.instructions article{padding:16px;border-top:2px solid #6558d3;background:rgba(255,255,255,.58)}.instructions b{color:#6558d3;font-size:11px}.instructions h3{font-size:14px;margin:9px 0 5px}.instructions p{color:#625e70;font-size:12px;line-height:1.55;margin:0}.notice{margin-top:28px;padding:14px 16px;border:1px solid #ead6a4;border-radius:11px;background:#fff9e8;color:#625022;font-size:12px;line-height:1.55}.footer{display:flex;justify-content:space-between;gap:20px;margin-top:38px;padding-top:20px;border-top:1px solid #dedbe7;color:#6a6675;font-size:11px}.footer strong{color:#383443}@media(max-width:760px){.shell{padding:20px 14px 40px}.hero{grid-template-columns:1fr;padding:48px 0 28px}.hero h1{font-size:clamp(2.5rem,14vw,4.2rem)}.grid{grid-template-columns:1fr}.content-head{align-items:start;flex-direction:column}.instructions{grid-template-columns:1fr}.footer{flex-direction:column}.access-card{min-height:76px}}
+</style></head><body><main class="shell"><a class="brand" href="/"><span class="mark">OS</span><span><strong>OpenSpeaker</strong><small>Program operations</small></span></a><section class="hero"><div><p class="eyebrow">Private evaluation handoff</p><h1>Choose one link.<br><em>Enter the workspace.</em></h1></div><div><p class="lead">Each access link securely provisions one evaluator as a temporary organizer after ChatGPT sign-in.</p><span class="badge">10 one-time invitations</span></div></section><section class="content"><div class="content-head"><div><h2>Evaluator access links</h2><p>Select a link that another evaluator has not used.</p></div>${expiry}</div><div class="grid">${cards}</div><div class="instructions"><article><b>01</b><h3>Choose an unused link</h3><p>Each numbered invitation works once and binds to one evaluator identity.</p></article><article><b>02</b><h3>Sign in with ChatGPT</h3><p>If prompted, sign in and OpenSpeaker will return you to the organizer dashboard.</p></article><article><b>03</b><h3>Evaluate the complete workflow</h3><p>Private organizer tools, public CFP, speaker portal, reviewer queue, and public widgets remain role-scoped.</p></article></div><p class="notice"><strong>Private handoff:</strong> Please do not post this page or its destination links publicly. Opening a numbered link consumes it for that signed-in evaluator.</p></section><footer class="footer"><span><strong>OpenSpeaker</strong> · open-source conference program operations</span><span>Secure, temporary evaluator access</span></footer></main></body></html>`
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store, max-age=0', 'Pragma': 'no-cache', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } })
+}
+
 async function fetchHandler(request, env) {
   const requestId = request.headers.get('x-request-id')?.slice(0, 128) || crypto.randomUUID()
+  const handoffMatch = new URL(request.url).pathname.match(/^\/evaluator-access\/([A-Za-z0-9_-]{40,100})$/)
+  if (handoffMatch && request.method === 'GET') return evaluatorHandoffPage(request, env, handoffMatch[1])
   if (new URL(request.url).pathname.startsWith('/api/')) {
     try {
       return await routeApi(request, env, requestId)
